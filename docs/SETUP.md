@@ -1,6 +1,6 @@
 # Set up a customer-owned LiteLLM gateway
 
-This guide takes an administrator from a fresh evaluation host to two OpenHands members using separate existing LiteLLM virtual keys. Start with staging, two test members and small budgets. This is an Enterprise beta for interactive conversations; review [limitations](LIMITATIONS.md) before rollout.
+This guide takes an administrator from a fresh evaluation host to two OpenHands members using separate existing LiteLLM virtual keys. Start with staging, two test members and small budgets. This is an Enterprise beta for native conversations, including the supported app-started background workflows; review [limitations](LIMITATIONS.md) before rollout.
 
 ## 1. Prepare the host and access
 
@@ -174,7 +174,7 @@ Sign in as each regular member and start a fresh interactive conversation. Selec
 
 Run [the complete verification checklist](VERIFICATION.md) and retain sanitized outcomes before wider access. The included [evidence](../compose-evidence.json) records the tested Haiku/Sonnet demonstration; it does not certify your chosen DeepSeek/Opus deployment or production SSO configuration.
 
-The shared picker can show a model the current person cannot use. This beta enforces policy on inference, rather than tailoring the picker per person. Human background workflows remain gated pending validation; service accounts need a separate budget-owner policy.
+The shared picker can show a model the current person cannot use. This beta enforces policy on inference, rather than tailoring the picker per person. Native app-started human automations and GitLab resolver launches are enabled in this beta; follow [the background workflow setup and acceptance checks](BACKGROUND-WORKFLOWS.md). Automations use their definition owner, while GitLab resolver conversations use the mapped actor. Service accounts remain refused.
 
 ## 10. Rehearse rotation and recovery
 

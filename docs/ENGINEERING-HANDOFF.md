@@ -1,6 +1,6 @@
 # Engineering handoff: external-gateway beta
 
-Recorded November 14, 2026. This document is the resume point for an engineer who has not read the original conversation. **The repository contains a working staging evaluation, not an approved production release.** No live deployment access details are included.
+Recorded November 14, 2026; background revision November 15, 2026. This document is the resume point for an engineer who has not read the original conversation. **The repository contains a working staging evaluation, not an approved production release.** No live deployment access details are included.
 
 ## 1. Start here
 
@@ -14,12 +14,15 @@ Read, in order:
 
 The complete source overlays are included for reproducible builds; their total line count is not the feature's change size. Review the patch against its pinned Enterprise base for the actual changes. This repository is an evaluation overlay, not a full Enterprise development checkout.
 
+For the background revision, read [BACKGROUND-WORKFLOWS.md](BACKGROUND-WORKFLOWS.md) and [BACKGROUND-VALIDATION.md](BACKGROUND-VALIDATION.md). The original live evidence below describes the earlier interactive baseline; the new coordinator run passed 119 tests, with external services substituted.
+
 ## 2. Reproducible baseline
 
 | Component | Tested baseline |
 |---|---|
 | Enterprise | 1.92.0; base commit `7647eab7b963a5ed0a564215c082dd66331b79a6` |
 | SDK | 1.62.0; no SDK source changes |
+| Automation | 1.32.1; source revision `1b571fd2b93c4c6ea4a58eb237fc718a8f158e4e`; workspace 1.62.0 |
 | Customer-like LiteLLM | 1.103.6 |
 | Compose environment | Dedicated Linux amd64 host, approximately 16 GB RAM; PostgreSQL 16; Canvas 1.40.0 |
 | Product overlays | 23 Python files; mapped in `build/manifest/overlay-manifest.json` |
@@ -84,7 +87,7 @@ Acceptance: exact-release install/upgrade, opt-in/off regression, migration re-e
 
 ### Stage D — human background workflows, then service accounts
 
-Keep current guards until actual owner/trigger identity is established for each automation and GitLab resolver entry point. Where an existing human OpenHands identity is already resolved, reuse it. Explicitly decide owner-versus-trigger attribution for scheduled or delegated execution rather than guessing.
+The beta now admits native app-started automation and GitLab resolver triggers, with source-level ownership/binding and dispatcher-refusal tests. Production acceptance still needs the live staging checks in BACKGROUND-WORKFLOWS.md. Keep guards on other unsupported launch paths until their actual owner/trigger identity is established. Where an existing human OpenHands identity is already resolved, reuse it. The current automation contract uses the definition owner, including manual/event-triggered runs. A different owner-versus-trigger policy would be a separate product change.
 
 Acceptance per launch path: correct member key and customer spend owner, membership checks, model/budget denial, refresh, rotation and unmapped-actor failure. Service accounts are a separate policy and test milestone with an explicit credential/budget owner; no silent fallback to a human or organization shared key.
 

@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from openhands.sdk import LLM, Agent
 from pydantic import SecretStr
 from starlette.requests import Request
 
@@ -18,7 +19,6 @@ from openhands.app_server.config import get_global_config, get_sandbox_service
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
-from openhands.sdk import LLM, Agent
 from server.customer_gateway.config import CustomerGatewaySettings, get_settings
 from server.customer_gateway.profile import GatewayProfile, parse_profile
 from server.customer_gateway.tokens import (
@@ -154,9 +154,41 @@ def bind_llm(llm: LLM, profile: GatewayProfile, relay_url: str, token: str) -> L
     )
 
 
-# Launch sources whose sandbox owner is the human acting. Everything else (automation,
-# resolver, chat/issue integrations, microagent management) is refused while ON.
-INTERACTIVE_TRIGGERS = frozenset({None, 'gui', 'suggested_task', 'openhands_api'})
+# Launch sources whose sandbox owner is an already-resolved native OpenHands user/org
+# acting under their own membership and key, not a borrowed or ambient identity:
+#
+# - None/gui/suggested_task/openhands_api: the human who started the sandbox.
+# - automation (ConversationTrigger.AUTOMATION): webhook_router resolves and runs the
+#   conversation "in the context of the owner of the sandbox" (see its own docstring)
+#   before this hook ever runs; mint_for_sandbox already keys exclusively off
+#   `sandbox.created_by_user_id`, so this is the same owner binding, not a new one.
+# - resolver (ConversationTrigger.RESOLVER): shared by every *_view.py resolver
+#   integration (GitHub, GitLab, Bitbucket, Bitbucket DC, Azure DevOps, Slack, Jira,
+#   Jira DC) — not GitLab-specific. Each resolves its own platform actor to a native
+#   `keycloak_user_id` (e.g. gitlab_view.py's `token_manager.get_user_id_from_idp_user_id`)
+#   and the target org via `integrations/resolver_org_router.py:resolve_org_for_repo`
+#   before a sandbox is ever created. An unmapped actor or an unclaimed repo yields
+#   `None`/`OrgNotUsableError` there — resolver_org_router's own docstring is explicit
+#   that callers "should abort starting a conversation rather than falling back to a
+#   personal workspace" for a suspended org; it does not itself force gateway-enabled
+#   orgs to refuse an unclaimed-repo personal-workspace conversation. This hook does
+#   not change or re-check that routing: `org_gateway_for_sandbox` keys strictly off
+#   the org the sandbox was actually created under (`sandbox.credential_org_id`), so
+#   it enforces whichever org resolution picked — it cannot pick up a different org's
+#   gateway config, but it also cannot force a mis-routed personal-workspace fallback
+#   back onto the intended org's catalog/budget. That routing correctness is
+#   resolver_org_router's contract, not this allowlist's.
+#
+# Everything else (chat/issue integrations without a resolved native actor above, and
+# microagent management) is refused while ON. Service accounts are a distinct,
+# still-unimplemented policy, enforced independently of this allowlist:
+# `storage/customer_gateway_store.py:CustomerGatewayStore._load` explicitly checks
+# `account_type != ACCOUNT_TYPE_HUMAN` and raises `CustomerGatewayDenied('service_account')`
+# even when a credential row and active membership both exist for that user_id — it is
+# not merely "no such member row".
+INTERACTIVE_TRIGGERS = frozenset(
+    {None, 'gui', 'suggested_task', 'openhands_api', 'automation', 'resolver'}
+)
 
 
 def _assert_supported_runtime() -> None:

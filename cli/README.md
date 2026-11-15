@@ -83,18 +83,6 @@ next request.
 
 See `../docs/VERIFICATION.md` for the full checklist.
 
-## Bootstrap script test
-
-`cli/bootstrap_default_profile.py`'s `bound_profile_fields()` helper has a focused,
-plain-assert test in `cli/test_bootstrap_default_profile.py`. It needs the same
-in-container Python environment the bootstrap script itself does:
-
-```sh
-docker compose cp cli/test_bootstrap_default_profile.py app:/tmp/test_bootstrap_default_profile.py
-docker compose cp cli/bootstrap_default_profile.py app:/tmp/bootstrap_default_profile.py
-docker compose exec -w /tmp app python3 test_bootstrap_default_profile.py
-```
-
 ## Default native launch
 
 After configuring the catalog and importing keys, copy `cli/bootstrap_default_profile.py` into the app container and run it with `--org`, `--alias` and `--profile-name`. It sets both the shared picker profile and the organization’s default `agent_settings.llm`, so native API launches that omit `llm_profile` work as well. It preserves other agent configuration and leaves member overrides unchanged. Members with an existing LLM override must select a permitted profile or update that override through normal settings. Choose a default available to the intended members.

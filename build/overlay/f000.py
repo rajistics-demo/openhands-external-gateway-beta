@@ -1,7 +1,7 @@
 """Add opt-in customer gateway org config and per-member encrypted credentials.
 
-Additive only. Rollback is a feature-flag switch, not this downgrade: the
-downgrade drops customer key ciphertext and is for disposable test databases.
+Additive only. Use the feature flag for operational rollback. The downgrade
+retains these tables and encrypted keys; re-upgrade is idempotent.
 
 Revision ID: 216
 Revises: 215

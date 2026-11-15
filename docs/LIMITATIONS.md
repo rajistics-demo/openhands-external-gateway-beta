@@ -4,7 +4,7 @@ This preview was exercised on a dedicated 16 GB AWS Docker host with two regular
 
 Not qualified: the customer’s production IdP/network/model set; HA, load/soak and disaster recovery; older-binary rollback; Bifrost/Portkey; organization-wide OpenHands billing dashboards. The prior GKE regression evidence is recorded separately.
 
-While this mode is enabled, automations, GitLab resolver/service-account launches, warm backends, standalone `CloudWorkspace.get_llm` and Responses API calls are unsupported/refused. Startup app-side LLM title generation uses a first-message fallback. Other supported native auxiliary inference is charged through the member gateway key.
+While this mode is enabled, service-account launches, warm backends, unseeded standalone `CloudWorkspace.get_llm` and Responses API calls remain unsupported/refused. Native app-started human automations and GitLab resolver launches are now admitted; see [BACKGROUND-WORKFLOWS.md](BACKGROUND-WORKFLOWS.md) for their test scope and live staging checks. Startup app-side LLM title generation uses a first-message fallback. Other supported native auxiliary inference is charged through the member gateway key.
 
 Personal key import/rotation is an operator CLI action. There is no new key-management UI and no automatic synchronization between SSO accounts and customer LiteLLM users. Map the native OpenHands UUID to an existing customer key explicitly.
 
@@ -16,4 +16,4 @@ The application and worker retain the native Docker backend’s host socket acce
 
 App operators with the application encryption key and database access can decrypt stored member credentials. Back up and protect the persistent JWT_SECRET and database together; personal-key rotation does not require changing that secret.
 
-These background restrictions describe the current tested code, not an architectural incompatibility. Human-owned automations and GitLab resolver runs that already resolve an OpenHands user should reuse that identity; these paths need their own launch/key-attribution tests before removing the guards. Service accounts need an explicit credential and budget owner. See `ROADMAP.md`.
+The background revision has 119 independently passing tests, with external services substituted and SQLite persistence checks. Live scheduler/webhook/provider execution and the entrypoint completion-callback HTTP round-trip were not exercised in these new tests. Automations use the definition owner rather than an arbitrary external event actor. Service accounts still need a separately approved credential and budget-owner policy. See [the background scope](BACKGROUND-WORKFLOWS.md).

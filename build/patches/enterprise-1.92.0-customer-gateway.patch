@@ -1,6 +1,6 @@
 diff --git a/docker-compose.customer-gateway.yml b/docker-compose.customer-gateway.yml
 new file mode 100644
-index 0000000..0e02015
+index 000000000..0e02015fe
 --- /dev/null
 +++ b/docker-compose.customer-gateway.yml
 @@ -0,0 +1,18 @@
@@ -107,7 +107,7 @@ index 0000000..2444409
 +    # are retained; older code never reads them. Drop them manually only on purpose.
 +    pass
 diff --git a/openhands/app_server/app_conversation/app_conversation_router.py b/openhands/app_server/app_conversation/app_conversation_router.py
-index ce3dac8..6f5c8bc 100644
+index ce3dac822..6f5c8bc94 100644
 --- a/openhands/app_server/app_conversation/app_conversation_router.py
 +++ b/openhands/app_server/app_conversation/app_conversation_router.py
 @@ -105,6 +105,7 @@ from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
@@ -138,7 +138,7 @@ index ce3dac8..6f5c8bc 100644
          mode='json',
          exclude_none=True,
 diff --git a/openhands/app_server/app_conversation/live_status_app_conversation_service.py b/openhands/app_server/app_conversation/live_status_app_conversation_service.py
-index a43abf7..9dbc835 100644
+index a43abf7b3..9dbc8352c 100644
 --- a/openhands/app_server/app_conversation/live_status_app_conversation_service.py
 +++ b/openhands/app_server/app_conversation/live_status_app_conversation_service.py
 @@ -167,6 +167,7 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
@@ -214,7 +214,7 @@ index a43abf7..9dbc835 100644
                      f'{base_url}/{name}',
                      json={
 diff --git a/openhands/app_server/sandbox/docker_sandbox_service.py b/openhands/app_server/sandbox/docker_sandbox_service.py
-index e8a541d..f615a1b 100644
+index e8a541dd4..f615a1ba2 100644
 --- a/openhands/app_server/sandbox/docker_sandbox_service.py
 +++ b/openhands/app_server/sandbox/docker_sandbox_service.py
 @@ -58,6 +58,7 @@ from openhands.app_server.sandbox.sandbox_store import (
@@ -236,7 +236,7 @@ index e8a541d..f615a1b 100644
          # Set CORS origins for remote browser access when web_url is configured.
          # This allows the agent-server container to accept requests from the
 diff --git a/openhands/app_server/sandbox/managed_sandbox_service.py b/openhands/app_server/sandbox/managed_sandbox_service.py
-index a6c5422..c81811a 100644
+index a6c542265..c81811a68 100644
 --- a/openhands/app_server/sandbox/managed_sandbox_service.py
 +++ b/openhands/app_server/sandbox/managed_sandbox_service.py
 @@ -36,6 +36,7 @@ from openhands.app_server.sandbox.sandbox_store import (
@@ -258,7 +258,7 @@ index a6c5422..c81811a 100644
          if outcome == ProviderOutcome.FAILED:
              return False
 diff --git a/openhands/app_server/sandbox/remote_sandbox_service.py b/openhands/app_server/sandbox/remote_sandbox_service.py
-index 454fa49..03be96b 100644
+index 454fa4989..03be96b7a 100644
 --- a/openhands/app_server/sandbox/remote_sandbox_service.py
 +++ b/openhands/app_server/sandbox/remote_sandbox_service.py
 @@ -76,6 +76,7 @@ from openhands.app_server.settings.settings_models import (
@@ -290,7 +290,7 @@ index 454fa49..03be96b 100644
          runtime_data = await self._get_runtime_for_resume(sandbox_id)
          if runtime_data is None:
 diff --git a/openhands/app_server/services/jwt_service.py b/openhands/app_server/services/jwt_service.py
-index 4326254..56a43d0 100644
+index 432625450..56a43d080 100644
 --- a/openhands/app_server/services/jwt_service.py
 +++ b/openhands/app_server/services/jwt_service.py
 @@ -49,6 +49,7 @@ class JwtAudience(StrEnum):
@@ -302,7 +302,7 @@ index 4326254..56a43d0 100644
  
  class JwtService:
 diff --git a/openhands/app_server/user/user_router.py b/openhands/app_server/user/user_router.py
-index 5585583..0f00ace 100644
+index 5585583ef..0f00aceb7 100644
 --- a/openhands/app_server/user/user_router.py
 +++ b/openhands/app_server/user/user_router.py
 @@ -8,6 +8,7 @@ from openhands.app_server.integrations.service_types import UserGitInfo
@@ -329,7 +329,7 @@ index 5585583..0f00ace 100644
  
 diff --git a/openhands/app_server/utils/customer_gateway_hooks.py b/openhands/app_server/utils/customer_gateway_hooks.py
 new file mode 100644
-index 0000000..83bfdd2
+index 000000000..83bfdd210
 --- /dev/null
 +++ b/openhands/app_server/utils/customer_gateway_hooks.py
 @@ -0,0 +1,100 @@
@@ -434,7 +434,7 @@ index 0000000..83bfdd2
 +    sandbox = await validate_session_key(session_api_key)
 +    return await svc.sanitize_sandbox_user_export(payload, sandbox)
 diff --git a/saas_server.py b/saas_server.py
-index cb4da33..9d1fd99 100644
+index cb4da334f..9d1fd9989 100644
 --- a/saas_server.py
 +++ b/saas_server.py
 @@ -36,6 +36,9 @@ from server.constants import (  # noqa: E402
@@ -462,10 +462,10 @@ index cb4da33..9d1fd99 100644
  base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
 diff --git a/server/customer_gateway/__init__.py b/server/customer_gateway/__init__.py
 new file mode 100644
-index 0000000..e69de29
+index 000000000..e69de29bb
 diff --git a/server/customer_gateway/cli.py b/server/customer_gateway/cli.py
 new file mode 100644
-index 0000000..8b7dbee
+index 000000000..8b7dbee56
 --- /dev/null
 +++ b/server/customer_gateway/cli.py
 @@ -0,0 +1,79 @@
@@ -550,7 +550,7 @@ index 0000000..8b7dbee
 +    sys.exit(asyncio.run(main(sys.argv[1:])))
 diff --git a/server/customer_gateway/config.py b/server/customer_gateway/config.py
 new file mode 100644
-index 0000000..e14c0ef
+index 000000000..e14c0ef3f
 --- /dev/null
 +++ b/server/customer_gateway/config.py
 @@ -0,0 +1,31 @@
@@ -587,7 +587,7 @@ index 0000000..e14c0ef
 +    )
 diff --git a/server/customer_gateway/profile.py b/server/customer_gateway/profile.py
 new file mode 100644
-index 0000000..0d7f065
+index 000000000..0d7f065f6
 --- /dev/null
 +++ b/server/customer_gateway/profile.py
 @@ -0,0 +1,66 @@
@@ -659,7 +659,7 @@ index 0000000..0d7f065
 +    return GatewayProfile(url.geturl(), dict(models), protocol, header, caps)
 diff --git a/server/customer_gateway/relay.py b/server/customer_gateway/relay.py
 new file mode 100644
-index 0000000..e680a91
+index 000000000..e680a9125
 --- /dev/null
 +++ b/server/customer_gateway/relay.py
 @@ -0,0 +1,340 @@
@@ -1005,7 +1005,7 @@ index 0000000..e680a91
 +    )
 diff --git a/server/customer_gateway/routes.py b/server/customer_gateway/routes.py
 new file mode 100644
-index 0000000..ae2c7bc
+index 000000000..ae2c7bc8b
 --- /dev/null
 +++ b/server/customer_gateway/routes.py
 @@ -0,0 +1,63 @@
@@ -1074,10 +1074,10 @@ index 0000000..ae2c7bc
 +    return router
 diff --git a/server/customer_gateway/service.py b/server/customer_gateway/service.py
 new file mode 100644
-index 0000000..43b7179
+index 000000000..c37b0a113
 --- /dev/null
 +++ b/server/customer_gateway/service.py
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,456 @@
 +"""Native seams for the opt-in customer gateway: relay authorization, sandbox-bound token
 +minting, launch-time LLM binding and sandbox refresh environment.
 +
@@ -1091,6 +1091,7 @@ index 0000000..43b7179
 +from uuid import UUID
 +
 +from fastapi import HTTPException, status
++from openhands.sdk import LLM, Agent
 +from pydantic import SecretStr
 +from starlette.requests import Request
 +
@@ -1098,7 +1099,6 @@ index 0000000..43b7179
 +from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
 +from openhands.app_server.services.injector import InjectorState
 +from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
-+from openhands.sdk import LLM, Agent
 +from server.customer_gateway.config import CustomerGatewaySettings, get_settings
 +from server.customer_gateway.profile import GatewayProfile, parse_profile
 +from server.customer_gateway.tokens import (
@@ -1234,9 +1234,41 @@ index 0000000..43b7179
 +    )
 +
 +
-+# Launch sources whose sandbox owner is the human acting. Everything else (automation,
-+# resolver, chat/issue integrations, microagent management) is refused while ON.
-+INTERACTIVE_TRIGGERS = frozenset({None, 'gui', 'suggested_task', 'openhands_api'})
++# Launch sources whose sandbox owner is an already-resolved native OpenHands user/org
++# acting under their own membership and key, not a borrowed or ambient identity:
++#
++# - None/gui/suggested_task/openhands_api: the human who started the sandbox.
++# - automation (ConversationTrigger.AUTOMATION): webhook_router resolves and runs the
++#   conversation "in the context of the owner of the sandbox" (see its own docstring)
++#   before this hook ever runs; mint_for_sandbox already keys exclusively off
++#   `sandbox.created_by_user_id`, so this is the same owner binding, not a new one.
++# - resolver (ConversationTrigger.RESOLVER): shared by every *_view.py resolver
++#   integration (GitHub, GitLab, Bitbucket, Bitbucket DC, Azure DevOps, Slack, Jira,
++#   Jira DC) — not GitLab-specific. Each resolves its own platform actor to a native
++#   `keycloak_user_id` (e.g. gitlab_view.py's `token_manager.get_user_id_from_idp_user_id`)
++#   and the target org via `integrations/resolver_org_router.py:resolve_org_for_repo`
++#   before a sandbox is ever created. An unmapped actor or an unclaimed repo yields
++#   `None`/`OrgNotUsableError` there — resolver_org_router's own docstring is explicit
++#   that callers "should abort starting a conversation rather than falling back to a
++#   personal workspace" for a suspended org; it does not itself force gateway-enabled
++#   orgs to refuse an unclaimed-repo personal-workspace conversation. This hook does
++#   not change or re-check that routing: `org_gateway_for_sandbox` keys strictly off
++#   the org the sandbox was actually created under (`sandbox.credential_org_id`), so
++#   it enforces whichever org resolution picked — it cannot pick up a different org's
++#   gateway config, but it also cannot force a mis-routed personal-workspace fallback
++#   back onto the intended org's catalog/budget. That routing correctness is
++#   resolver_org_router's contract, not this allowlist's.
++#
++# Everything else (chat/issue integrations without a resolved native actor above, and
++# microagent management) is refused while ON. Service accounts are a distinct,
++# still-unimplemented policy, enforced independently of this allowlist:
++# `storage/customer_gateway_store.py:CustomerGatewayStore._load` explicitly checks
++# `account_type != ACCOUNT_TYPE_HUMAN` and raises `CustomerGatewayDenied('service_account')`
++# even when a credential row and active membership both exist for that user_id — it is
++# not merely "no such member row".
++INTERACTIVE_TRIGGERS = frozenset(
++    {None, 'gui', 'suggested_task', 'openhands_api', 'automation', 'resolver'}
++)
 +
 +
 +def _assert_supported_runtime() -> None:
@@ -1504,7 +1536,7 @@ index 0000000..43b7179
 +    }
 diff --git a/server/customer_gateway/tokens.py b/server/customer_gateway/tokens.py
 new file mode 100644
-index 0000000..f2b8586
+index 000000000..f2b85868e
 --- /dev/null
 +++ b/server/customer_gateway/tokens.py
 @@ -0,0 +1,83 @@
@@ -1592,7 +1624,7 @@ index 0000000..f2b8586
 +        claims['jti'],
 +    )
 diff --git a/server/routes/api_keys.py b/server/routes/api_keys.py
-index 79fdbab..09af9ac 100644
+index 79fdbab46..09af9ac2e 100644
 --- a/server/routes/api_keys.py
 +++ b/server/routes/api_keys.py
 @@ -14,6 +14,7 @@ from openhands.app_server.user_auth import (
@@ -1670,7 +1702,7 @@ index 79fdbab..09af9ac 100644
  async def refresh_llm_api_key_for_byor(
      user_id: str = Depends(get_user_id),
 diff --git a/server/routes/users_v1.py b/server/routes/users_v1.py
-index a728d31..4f56710 100644
+index a728d3101..4f56710e0 100644
 --- a/server/routes/users_v1.py
 +++ b/server/routes/users_v1.py
 @@ -31,6 +31,7 @@ from openhands.app_server.settings.provider_connections import ProviderConnectio
@@ -1693,7 +1725,7 @@ index a728d31..4f56710 100644
      content = user_info.model_dump(mode='json')
 diff --git a/storage/customer_gateway.py b/storage/customer_gateway.py
 new file mode 100644
-index 0000000..4700020
+index 000000000..470002007
 --- /dev/null
 +++ b/storage/customer_gateway.py
 @@ -0,0 +1,56 @@
@@ -1755,7 +1787,7 @@ index 0000000..4700020
 +    )
 diff --git a/storage/customer_gateway_store.py b/storage/customer_gateway_store.py
 new file mode 100644
-index 0000000..acb0497
+index 000000000..acb04978a
 --- /dev/null
 +++ b/storage/customer_gateway_store.py
 @@ -0,0 +1,294 @@
@@ -2054,7 +2086,7 @@ index 0000000..acb0497
 +            allowed_models=frozenset(cred.allowed_models),
 +        )
 diff --git a/storage/saas_settings_store.py b/storage/saas_settings_store.py
-index eda76a7..919af76 100644
+index eda76a75a..919af7699 100644
 --- a/storage/saas_settings_store.py
 +++ b/storage/saas_settings_store.py
 @@ -26,6 +26,7 @@ from openhands.app_server.settings.settings_models import (
@@ -2139,12 +2171,1983 @@ index eda76a7..919af76 100644
                  # Managed/proxy key — store on this member but mark as org-managed
                  org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                  org_member.has_custom_llm_api_key = False
+diff --git a/tests/unit/integrations/gitlab/test_gitlab_resolver_gateway_integration.py b/tests/unit/integrations/gitlab/test_gitlab_resolver_gateway_integration.py
+new file mode 100644
+index 000000000..c28bb7289
+--- /dev/null
++++ b/tests/unit/integrations/gitlab/test_gitlab_resolver_gateway_integration.py
+@@ -0,0 +1,604 @@
++"""Integration tests: real GitlabIssue resolver conversation launch through the
++real customer-gateway binder.
++
++Unlike tests/unit/test_gitlab_view.py and the other integrations/*_view.py test
++suites, this module does NOT replace ``get_app_conversation_service`` with a fake
++that skips straight to a canned task status. It constructs a real
++``LiveStatusAppConversationService`` and lets ``GitlabIssue._create_v1_conversation``
++drive it exactly as production code does, so the real
++``customer_gateway_hooks.bind_start_request`` -> ``server.customer_gateway.service``
++code runs for each case below. Only true I/O leaves are stubbed:
++  - External GitLab calls (``GitLabServiceImpl``, ``SaasSecretsStore``) — no network.
++  - ``CustomerGatewayStore``'s own DB-touching staticmethods — the same seam the
++    rest of tests/unit/server/customer_gateway/ already uses; no PG container is
++    available in this sandbox, so this is a mocked-DB test, not PG regression
++    evidence, exactly like the other 92 tests in that package.
++  - Sandbox creation / agent-server HTTP (``_wait_for_sandbox_start``,
++    ``run_setup_scripts``, the httpx client) — no real sandbox infra here either.
++  - ``resolve_org_for_repo`` — controlled directly per test case (mapped org,
++    unmapped/no-claim, wrong org), per the design doc's explicit routing contract.
++"""
++
++from __future__ import annotations
++
++from datetime import UTC, datetime
++from unittest.mock import AsyncMock, Mock, patch
++from uuid import uuid4
++
++import pytest
++from jinja2 import Environment
++from openhands.agent_server.models import StartConversationRequest
++from openhands.sdk import LLM, Agent
++from openhands.sdk.workspace import LocalWorkspace
++from pydantic import SecretStr
++
++from integrations.gitlab.gitlab_view import GitlabIssue
++from integrations.types import UserData
++from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
++    LiveStatusAppConversationService,
++)
++from openhands.app_server.sandbox.sandbox_models import (
++    AGENT_SERVER,
++    ExposedUrl,
++    SandboxInfo,
++    SandboxStatus,
++)
++from server.customer_gateway import service as gw_service
++from server.customer_gateway.tokens import verify_inference_token
++
++RELAY = 'https://app.example/api/customer-gateway/v1'
++ON_ENV = {
++    'CUSTOMER_GATEWAY_ENABLED': 'true',
++    'CUSTOMER_GATEWAY_RELAY_URL': RELAY,
++    'CUSTOMER_GATEWAY_TOKEN_URL': 'https://app.example/api/customer-gateway/token',
++}
++
++
++def _real_start_request() -> StartConversationRequest:
++    """A real (not mocked) request, the same shape production code builds."""
++    return StartConversationRequest(
++        agent=Agent(
++            llm=LLM(
++                model='litellm_proxy/claude-sonnet',
++                base_url='http://litellm:4000',
++                api_key=SecretStr('managed'),
++                usage_id='agent',
++            )
++        ),
++        workspace=LocalWorkspace(working_dir='/tmp'),
++    )
++
++
++def _real_sandbox(credential_org_id, created_by_user_id) -> SandboxInfo:
++    return SandboxInfo(
++        id='sb-gitlab-1',
++        created_by_user_id=created_by_user_id,
++        credential_org_id=credential_org_id,
++        sandbox_spec_id='spec',
++        status=SandboxStatus.RUNNING,
++        session_api_key='session-key',
++        exposed_urls=[
++            ExposedUrl(name=AGENT_SERVER, url='http://agent-server:8000', port=60000)
++        ],
++    )
++
++
++def _build_saas_user_auth(actor_id: str) -> Mock:
++    """Minimal fake of the SaasUserAuth boundary ResolverUserContext wraps —
++    the one real seam between "who is this GitLab actor" and the conversation
++    service. Only the methods actually reached by this harness's (narrowed)
++    control flow are implemented; everything else is left to fail loudly if a
++    broader code path starts depending on it."""
++    auth = Mock()
++    auth.get_user_id = AsyncMock(return_value=actor_id)
++    auth.get_user_email = AsyncMock(return_value=None)
++    auth.get_user_settings = AsyncMock(return_value=None)
++    auth.get_named_oauth_secrets = AsyncMock(return_value=None)
++    return auth
++
++
++def _build_real_service(
++    sandbox: SandboxInfo, placeholder_user_id: str
++) -> tuple[LiveStatusAppConversationService, Mock]:
++    """A real LiveStatusAppConversationService with only its I/O leaves mocked
++    (sandbox creation, agent-server HTTP, title generation) — the actual
++    ``_start_app_conversation`` control flow, including the
++    ``customer_gateway_hooks.bind_start_request`` call, runs unmocked.
++
++    ``user_context`` is a placeholder here, built from ``placeholder_user_id``;
++    callers must replace ``svc.user_context`` with the real
++    ``ResolverUserContext`` GitlabIssue._create_v1_conversation constructs,
++    once that context is available (see ``_get_service_for``), so the actual
++    resolver identity propagation is exercised rather than an independently
++    fabricated one.
++    """
++    mock_user_context = Mock()
++    mock_user_context.get_user_id = AsyncMock(return_value=placeholder_user_id)
++    mock_user_context.get_user_email = AsyncMock(return_value=None)
++    mock_user_context.get_named_oauth_secrets = AsyncMock(return_value=None)
++    mock_user_context.get_user_info = AsyncMock(
++        return_value=Mock(
++            id=placeholder_user_id,
++            llm_model='gpt-4',
++            sandbox_grouping_strategy=Mock(),
++            confirmation_mode=False,
++            security_analyzer=None,
++            search_api_key=None,
++            mcp_config=None,
++            disabled_skills=[],
++            git_full_clone=False,
++            agent_settings=None,
++        )
++    )
++
++    mock_sandbox_service = Mock()
++    mock_sandbox_service.get_sandbox = AsyncMock(return_value=sandbox)
++    mock_sandbox_spec_service = Mock()
++    mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
++        return_value=Mock(working_dir='/workspace/project')
++    )
++    mock_app_conversation_info_service = Mock()
++    mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
++    mock_app_conversation_start_task_service = Mock()
++    mock_app_conversation_start_task_service.save_app_conversation_start_task = (
++        AsyncMock(side_effect=lambda task: task)
++    )
++    mock_event_callback_service = Mock()
++    mock_event_callback_service.save_event_callback = AsyncMock()
++    mock_event_service = Mock()
++    mock_httpx_client = Mock()
++    mock_response = Mock()
++    mock_response.json.return_value = {'id': str(uuid4())}
++    mock_response.raise_for_status = Mock()
++    mock_httpx_client.post = AsyncMock(return_value=mock_response)
++    mock_pending_message_service = Mock()
++
++    svc = LiveStatusAppConversationService(
++        init_git_in_empty_workspace=True,
++        user_context=mock_user_context,
++        app_conversation_info_service=mock_app_conversation_info_service,
++        app_conversation_start_task_service=mock_app_conversation_start_task_service,
++        event_callback_service=mock_event_callback_service,
++        event_service=mock_event_service,
++        sandbox_service=mock_sandbox_service,
++        sandbox_spec_service=mock_sandbox_spec_service,
++        jwt_service=Mock(),
++        pending_message_service=mock_pending_message_service,
++        sandbox_startup_timeout=30,
++        sandbox_startup_poll_frequency=1,
++        max_num_conversations_per_sandbox=20,
++        httpx_client=mock_httpx_client,
++        web_url='https://test.example.com',
++        openhands_provider_base_url='https://provider.example.com',
++        access_token_hard_timeout=None,
++        app_mode='test',
++    )
++
++    # Real request, built once per launch — this is what bind_start_request
++    # actually rebinds; production's own _build_start_conversation_request_for_user
++    # is not under test here, only the gateway binding step that runs after it.
++    svc._build_start_conversation_request_for_user = AsyncMock(
++        return_value=_real_start_request()
++    )
++
++    async def mock_wait_for_sandbox(task):
++        task.sandbox_id = sandbox.id
++        yield task
++
++    async def mock_run_setup_scripts(
++        task, sandbox_, workspace, agent_server_url, conversation_id
++    ):
++        yield task
++
++    svc._wait_for_sandbox_start = mock_wait_for_sandbox
++    svc.run_setup_scripts = mock_run_setup_scripts
++    svc._load_hooks_from_workspace = AsyncMock(return_value=None)
++    svc._process_pending_messages = AsyncMock()
++    svc._sync_start_title = AsyncMock()
++    svc._ensure_profile_runtime = AsyncMock(
++        # Pinned product SDK is 1.62.0; using the real version here keeps any
++        # version-conditional code exercised on the correct branch.
++        return_value=Mock(browser_available=True, sdk_version='1.62.0')
++    )
++
++    return svc, mock_httpx_client
++
++
++def _get_service_for(svc, expected_resolver_org_id):
++    """Build the ``get_app_conversation_service`` stand-in that
++    ``GitlabIssue._create_v1_conversation`` calls with its own
++    ``InjectorState``. Unlike a fake that ignores the context entirely, this
++    extracts the *real* ``ResolverUserContext`` production code attached to
++    that state, asserts it carries the expected resolved org, and swaps it in
++    as ``svc.user_context`` so the conversation's actual run uses real
++    resolver-identity propagation (``get_user_id``/``get_user_info`` go
++    through ``ResolverUserContext`` to the actor's own ``SaasUserAuth`` fake,
++    not an independently fabricated context)."""
++    import contextlib
++
++    from integrations.resolver_context import ResolverUserContext
++    from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
++
++    @contextlib.asynccontextmanager
++    async def _get_service(injector_state):
++        ctx = getattr(injector_state, USER_CONTEXT_ATTR)
++        assert isinstance(ctx, ResolverUserContext)
++        assert ctx.resolver_org_id == expected_resolver_org_id
++        svc.user_context = ctx
++        yield svc
++
++    return _get_service
++
++
++def _gw(org_id):
++    return gw_service.OrgGateway(
++        org_id,
++        'gw',
++        {
++            'base_url': 'https://gw.customer.example/v1',
++            'models': {'claude-sonnet': 'anthropic/claude-sonnet'},
++        },
++        datetime(2026, 11, 14, tzinfo=UTC),
++    )
++
++
++def _gitlab_issue(full_repo_name: str, keycloak_user_id: str) -> GitlabIssue:
++    return GitlabIssue(
++        installation_id='inst-1',
++        issue_number=7,
++        project_id=99,
++        full_repo_name=full_repo_name,
++        is_public_repo=False,
++        user_info=UserData(
++            user_id=1, username='actor', keycloak_user_id=keycloak_user_id
++        ),
++        raw_payload=Mock(),
++        conversation_id='conv',
++        should_extract=False,
++        send_summary_instruction=False,
++        title='ignored',
++        description='ignored',
++        previous_comments=[],
++        is_mr=False,
++    )
++
++
++@pytest.fixture
++def _no_external_gitlab_io():
++    """Stub the only real network calls GitlabIssue would otherwise make."""
++    with (
++        patch(
++            'integrations.gitlab.gitlab_view.GitLabServiceImpl'
++        ) as mock_gl_service_cls,
++        patch(
++            'integrations.gitlab.gitlab_view.SaasSecretsStore.get_instance',
++            AsyncMock(return_value=None),
++        ),
++    ):
++        inst = mock_gl_service_cls.return_value
++        inst.get_issue_or_mr_comments = AsyncMock(return_value=[])
++        inst.get_issue_or_mr_title_and_body = AsyncMock(
++            return_value=('Real bug title', 'Real bug body')
++        )
++        yield
++
++
++@pytest.fixture
++def jinja_env() -> Environment:
++    from pathlib import Path
++
++    from jinja2 import FileSystemLoader
++
++    repo_root = Path(__file__).resolve().parents[4]
++    return Environment(
++        loader=FileSystemLoader(
++            str(
++                repo_root
++                / 'openhands/app_server/integrations/templates/resolver/gitlab'
++            )
++        )
++    )
++
++
++async def _run_gitlab_issue(
++    monkeypatch,
++    jinja_env,
++    org_id,
++    created_by_user_id,
++    gateway_patches,
++    full_repo_name='acme/widgets',
++    resolved_org_id_override=...,
++):
++    """Drive the real GitlabIssue -> LiveStatusAppConversationService ->
++    bind_start_request chain for one issue. Returns ('ok', sandbox) on a
++    successful launch, or (error message, sandbox) if the real conversation
++    service's own task-ERROR -> RuntimeError translation fired (gitlab_view.py's
++    own ``_create_v1_conversation`` does this, unmodified)."""
++    import contextlib
++
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    sandbox = _real_sandbox(org_id, created_by_user_id)
++    svc, mock_httpx_client = _build_real_service(sandbox, created_by_user_id)
++
++    issue = _gitlab_issue(full_repo_name, keycloak_user_id=created_by_user_id)
++    resolved_org_id = (
++        org_id if resolved_org_id_override is ... else resolved_org_id_override
++    )
++    saas_user_auth = _build_saas_user_auth(created_by_user_id)
++    _get_service = _get_service_for(svc, resolved_org_id)
++
++    mock_conversation_info_class = Mock()
++    mock_conversation_info_class.model_validate.side_effect = lambda data: Mock(
++        id=data['id'], agent=Mock()
++    )
++
++    with contextlib.ExitStack() as stack:
++        stack.enter_context(
++            patch(
++                'integrations.gitlab.gitlab_view.resolve_org_for_repo',
++                AsyncMock(return_value=resolved_org_id),
++            )
++        )
++        stack.enter_context(
++            patch(
++                'integrations.gitlab.gitlab_view.get_app_conversation_service',
++                _get_service,
++            )
++        )
++        stack.enter_context(
++            patch(
++                'openhands.app_server.app_conversation'
++                '.live_status_app_conversation_service.ConversationInfo',
++                mock_conversation_info_class,
++            )
++        )
++        for p in gateway_patches:
++            stack.enter_context(p)
++        conversation_id = await issue.initialize_new_conversation()
++        assert issue.resolved_org_id == resolved_org_id
++        try:
++            await issue._create_v1_conversation(
++                jinja_env=jinja_env,
++                saas_user_auth=saas_user_auth,
++                conversation_id=conversation_id,
++            )
++            result = 'ok'
++        except RuntimeError as exc:
++            result = str(exc)
++    return result, sandbox, mock_httpx_client
++
++
++def _gw_bound_patches(gw, policy_version=3):
++    return [
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(return_value=policy_version),
++        ),
++    ]
++
++
++def _gw_denied_patches(gw, reason):
++    return [
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(side_effect=gw_service.CustomerGatewayDenied(reason)),
++        ),
++    ]
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('is_mr', [False, True])
++@pytest.mark.parametrize('actor_name', ['sue', 'dave'])
++async def test_mapped_member_issue_and_mr_bind_through_real_gateway(
++    monkeypatch, jinja_env, _no_external_gitlab_io, is_mr, actor_name
++):
++    """Two different GitLab actors in the same gateway-enabled org, for both
++    an issue and an MR, each get a real conversation launch bound to the
++    customer's relay/token through the unmocked bind_start_request path —
++    using the *real* ``ResolverUserContext`` production code builds (see
++    ``_get_service_for``), not an independently fabricated context. The
++    per-actor JWT claim on the actually-posted agent-server payload is
++    asserted to match that specific actor, proving identity propagates
++    end-to-end rather than only an allowlist/config check passing."""
++    org_id = uuid4()
++    # created_by_user_id must be a real UUID string (mint_for_sandbox parses it
++    # with UUID(...)); actor_name only distinguishes the two parametrized runs.
++    actor = str(uuid4())
++    gw = _gw(org_id)
++
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    jwt_service = gw_service._jwt()
++
++    sandbox = _real_sandbox(org_id, actor)
++    svc, mock_httpx_client = _build_real_service(sandbox, actor)
++    issue = _gitlab_issue('acme/widgets', keycloak_user_id=actor)
++    issue.is_mr = is_mr
++    saas_user_auth = _build_saas_user_auth(actor)
++    _get_service = _get_service_for(svc, org_id)
++
++    mock_conversation_info_class = Mock()
++    mock_conversation_info_class.model_validate.side_effect = lambda data: Mock(
++        id=data['id'], agent=Mock()
++    )
++
++    with (
++        patch(
++            'integrations.gitlab.gitlab_view.resolve_org_for_repo',
++            AsyncMock(return_value=org_id),
++        ),
++        patch(
++            'integrations.gitlab.gitlab_view.get_app_conversation_service',
++            _get_service,
++        ),
++        patch(
++            'openhands.app_server.app_conversation'
++            '.live_status_app_conversation_service.ConversationInfo',
++            mock_conversation_info_class,
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(return_value=3),
++        ),
++        patch.object(gw_service, '_jwt', return_value=jwt_service),
++    ):
++        conversation_id = await issue.initialize_new_conversation()
++        assert issue.resolved_org_id == org_id
++        await issue._create_v1_conversation(
++            jinja_env=jinja_env,
++            saas_user_auth=saas_user_auth,
++            conversation_id=conversation_id,
++        )
++
++    # This is the actual payload LiveStatusAppConversationService posted to the
++    # sandbox's agent-server through the real ResolverUserContext/
++    # bind_start_request path — i.e. the request after the real mutation, not
++    # a value this test constructed itself.
++    posted = mock_httpx_client.post.await_args_list[0]
++    posted_llm = posted.kwargs['json']['agent']['llm']
++    assert posted_llm['base_url'] == RELAY
++    # Never the original static/managed key this request started with.
++    assert posted_llm['api_key'] != 'managed'
++    posted_token = posted_llm['api_key']
++    claims = verify_inference_token(jwt_service, posted_token)
++    assert (claims.user_id, claims.org_id, claims.session_id) == (
++        actor,
++        str(org_id),
++        'sb-gitlab-1',
++    )
++
++
++@pytest.mark.asyncio
++async def test_store_not_a_member_denial_propagates_through_real_launch(
++    monkeypatch, jinja_env, _no_external_gitlab_io
++):
++    """This test proves *propagation*, not the store's own decision: it mocks
++    ``CustomerGatewayStore.current_policy_version`` to raise
++    ``CustomerGatewayDenied('not_a_member')`` and checks that the denial
++    reaches ``mint_for_sandbox`` → ``bind_start_request`` →
++    ``_start_app_conversation``'s real ERROR-status handling →
++    ``GitlabIssue._create_v1_conversation``'s own ``RuntimeError``
++    translation (unmodified production code) without any managed-key
++    fallback and without any agent-server POST (so no org's gateway key is
++    ever charged). It does **not** prove that ``CustomerGatewayStore`` itself
++    correctly classifies an actual unmapped actor as ``not_a_member`` — that
++    is the store's own account_type/row-lookup logic, covered (or not) by
++    ``tests/unit/storage/test_customer_gateway_store.py``, which this harness
++    does not exercise.
++
++    Note on two distinct "membership" checks, so this isn't mistaken for a
++    test of resolver routing: ``resolve_org_for_repo`` (see
++    integrations/resolver_org_router.py) checks ``OrgMemberStore`` and, if
++    the actor is *not* an org member there, returns None (falls back to the
++    actor's personal workspace) *before* this gateway code ever runs for that
++    reason — that is existing, unmodified resolver-routing behavior, not
++    something this candidate changes (the platform's gateway remains
++    opt-in-per-org, with no new global personal-workspace prohibition). This
++    test instead stands in for the separate, deeper check inside
++    ``CustomerGatewayStore`` itself, reached once an actor already resolved
++    into a gateway-enabled org."""
++    org_id = uuid4()
++    actor = str(uuid4())
++    gw = _gw(org_id)
++
++    result, _, mock_httpx_client = await _run_gitlab_issue(
++        monkeypatch,
++        jinja_env,
++        org_id,
++        actor,
++        _gw_denied_patches(gw, 'not_a_member'),
++    )
++    assert 'not_a_member' in result
++    # No agent-server POST happened at all — nothing was charged to any org's
++    # gateway key, this org's or otherwise.
++    mock_httpx_client.post.assert_not_called()
++
++
++@pytest.mark.asyncio
++async def test_store_service_account_denial_propagates_through_real_launch(
++    monkeypatch, jinja_env, _no_external_gitlab_io
++):
++    """Same propagation-only scope as
++    ``test_store_not_a_member_denial_propagates_through_real_launch``, for the
++    ``CustomerGatewayDenied('service_account')`` reason instead. This confirms
++    the launch is refused end-to-end (no managed-key fallback, no
++    agent-server POST) when the store denies for this reason; it does not by
++    itself prove ``CustomerGatewayStore._load``'s ``account_type != human``
++    branch is what produces that reason for a real service-account row — that
++    proof belongs to the store's own unit tests."""
++    org_id = uuid4()
++    actor = str(uuid4())
++    gw = _gw(org_id)
++
++    result, _, mock_httpx_client = await _run_gitlab_issue(
++        monkeypatch,
++        jinja_env,
++        org_id,
++        actor,
++        _gw_denied_patches(gw, 'service_account'),
++    )
++    assert 'service_account' in result
++    mock_httpx_client.post.assert_not_called()
++
++
++@pytest.mark.asyncio
++async def test_unclaimed_repo_personal_fallback_does_not_inherit_another_orgs_gateway(
++    monkeypatch, jinja_env, _no_external_gitlab_io
++):
++    """resolve_org_for_repo returning None is existing, unmodified resolver
++    behavior for an unclaimed git org (see integrations/resolver_org_router.py)
++    — this candidate does not add any new personal-workspace prohibition, and
++    the gateway remains strictly opt-in per organization. The one thing this
++    test adds is confirming that a personal-workspace launch must not pick up
++    a *different*, unrelated org's gateway just because that other org happens
++    to have one enabled. The sandbox here is created under the actor's own
++    personal org (no gateway), not the other org, so the launch proceeds
++    without any customer-gateway binding at all — it must not be silently
++    refused *or* silently bound to the wrong org's policy."""
++    personal_org_id = uuid4()
++    other_org_with_gateway = uuid4()
++    assert personal_org_id != other_org_with_gateway
++    actor = str(uuid4())
++    other_gw = _gw(other_org_with_gateway)
++
++    result, sandbox, _ = await _run_gitlab_issue(
++        monkeypatch,
++        jinja_env,
++        personal_org_id,
++        actor,
++        [
++            patch.object(
++                gw_service.CustomerGatewayStore,
++                'get_enabled_org_gateway',
++                AsyncMock(
++                    side_effect=lambda org_id: (
++                        other_gw if org_id == other_org_with_gateway else None
++                    )
++                ),
++            ),
++        ],
++        resolved_org_id_override=None,
++    )
++    assert result == 'ok'
++    assert sandbox.credential_org_id == personal_org_id
 diff --git a/tests/unit/server/customer_gateway/__init__.py b/tests/unit/server/customer_gateway/__init__.py
 new file mode 100644
-index 0000000..e69de29
+index 000000000..e69de29bb
+diff --git a/tests/unit/server/customer_gateway/_backend_adapter.py b/tests/unit/server/customer_gateway/_backend_adapter.py
+new file mode 100644
+index 000000000..0a4f93301
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/_backend_adapter.py
+@@ -0,0 +1,270 @@
++"""Adapter: real CloudSandboxBackend.start_conversation (automation-reference)
++-> real HTTP request body it builds and sends -> real
++LiveStatusAppConversationService.start_app_conversation() (the same real
++service instance the other tests in this module build) -> real
++customer_gateway_hooks.bind_start_request.
++
++Bounded scope (per root review): this file wires the real backend method and
++its real request/response serialization to the existing real service
++fixture. It does NOT stand up the full FastAPI app/router/DI stack, and the
++GET start-task/GET-conversation follow-up calls return minimal fixture
++metadata (only the fields CloudSandboxBackend.start_conversation itself
++reads: ``id``, ``status``, ``detail``, ``app_conversation_id``, and for the
++conversation GET: ``launched_agent_profile`` / ``additional_repositories``
++presence) rather than exercising AppConversation's full UI serialization.
++Labeled explicitly: HTTP transport and the GET read-back are mocked I/O; the
++POST handler itself genuinely parses the backend's real JSON body into a
++real ``AppConversationStartRequest`` and drives the real service.
++"""
++
++from __future__ import annotations
++
++import os
++from unittest.mock import AsyncMock
++from uuid import UUID, uuid4
++
++import httpx
++
++# ``openhands`` is a namespace package: once anything (e.g. openhands.sdk)
++# has imported it, appending to sys.path no longer extends its __path__, so
++# the automation source checkout's ``openhands/automation`` submodule must
++# be added to the already-created namespace package's search path directly.
++import openhands  # noqa: E402
++
++# AUTOMATION_SOURCE_DIR: path to an importable checkout of the automation
++# source tree (e.g. a tagged clone of OpenHands/automation matching the
++# deployed image, or a reference tree provided for this session). Must
++# contain an ``openhands/automation`` package. No default: the caller must
++# set it explicitly so this suite never silently imports an unintended tree.
++AUTOMATION_SOURCE_DIR = os.environ.get('AUTOMATION_SOURCE_DIR', '')
++if not AUTOMATION_SOURCE_DIR:
++    raise RuntimeError(
++        'AUTOMATION_SOURCE_DIR is not set. Point it at a checkout containing '
++        'openhands/automation before running '
++        'test_automation_backend_real_launch.py or '
++        'test_automation_run_lifecycle.py.'
++    )
++_AUTOMATION_SOURCE_OPENHANDS_PATH = os.path.join(AUTOMATION_SOURCE_DIR, 'openhands')
++if _AUTOMATION_SOURCE_OPENHANDS_PATH not in openhands.__path__:
++    openhands.__path__.append(_AUTOMATION_SOURCE_OPENHANDS_PATH)
++
++# AUTOMATION_CAPTURE_DIR: OPTIONAL path to a separately captured, exact
++# deployed openhands-automation==1.32.1 source snapshot, used only as an
++# EXTRA, redundant provenance cross-check (assert_real_cloud_backend_
++# provenance below) -- never imported. Not required to run or trust this
++# suite: automation_source_provenance.json (shipped alongside this file,
++# sanitized -- revision + sha256 hashes only, no source code, no private
++# capture) already supplies the independently-verifiable expected hashes,
++# so a reviewer with nothing but a public clone of
++# https://github.com/OpenHands/automation at the pinned revision can run
++# and trust this guard with AUTOMATION_SOURCE_DIR alone.
++AUTOMATION_CAPTURE_DIR = os.environ.get('AUTOMATION_CAPTURE_DIR', '')
++
++from openhands.app_server.app_conversation.app_conversation_models import (  # noqa: E402,E501
++    AppConversationStartRequest,
++)
++from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E402,E501
++    LiveStatusAppConversationService,
++)
++
++APP_CONVERSATIONS_PATH = '/api/v1/app-conversations'
++
++
++def make_sandbox_agent_server_echo_response(mock_httpx_client) -> None:
++    """Make the mocked SANDBOX agent-server POST (``mock_httpx_client.post``,
++    already stubbed by ``_build_real_service``) return a response that
++    actually satisfies ``ConversationInfo.model_validate`` -- a real server
++    echoes the same ``agent``/``workspace`` it was sent back in its response
++    (see live_status_app_conversation_service.py's own comment: "the
++    response echoes the same agent back through the AgentBase
++    discriminator") -- rather than the bare ``{"id": ...}`` fixture other
++    tests use (sufficient for their call-shape/denial assertions, but not
++    for proving the actual conversation reaches READY here)."""
++    from unittest.mock import AsyncMock, Mock
++
++    async def _post(url, json=None, **kwargs):  # noqa: A002
++        response = Mock()
++        response.raise_for_status = Mock()
++        response.json.return_value = {
++            'id': str(uuid4()),
++            'agent': json.get('agent'),
++            'workspace': json.get('workspace'),
++        }
++        return response
++
++    mock_httpx_client.post = AsyncMock(side_effect=_post)
++
++
++def make_transport(
++    svc: LiveStatusAppConversationService,
++    conversation_get_response: dict,
++) -> httpx.MockTransport:
++    """An httpx transport whose POST handler parses the REAL JSON body the
++    backend sent into a REAL AppConversationStartRequest and drains the REAL
++    service's start_app_conversation() async generator -- the actual
++    serialization boundary and the actual binder call. GET responses are a
++    labeled I/O fixture returning only the fields the backend reads."""
++
++    async def handler(request: httpx.Request) -> httpx.Response:
++        path = request.url.path
++        if request.method == 'POST' and path == APP_CONVERSATIONS_PATH:
++            import json
++
++            body = json.loads(request.content)
++            start_request = AppConversationStartRequest(
++                sandbox_id=body['sandbox_id'],
++                trigger=body['trigger'],
++                tags=body.get('tags') or {},
++                agent_profile_id=body.get('agent_profile_id'),
++                llm_profile=body.get('llm_profile'),
++                selected_repository=body.get('selected_repository'),
++                git_provider=body.get('git_provider'),
++                selected_branch=body.get('selected_branch'),
++            )
++            result = None
++            async for task in svc.start_app_conversation(start_request):
++                result = task
++            return httpx.Response(200, json=result.model_dump(mode='json'))
++        if request.method == 'GET' and path == APP_CONVERSATIONS_PATH:
++            return httpx.Response(200, json=[conversation_get_response])
++        raise AssertionError(f'Unexpected request: {request.method} {request.url}')
++
++    return httpx.MockTransport(handler)
++
++
++def make_automation_run(owner_user_id: str, org_id: UUID, sandbox_id: str):
++    """A real openhands.automation.models.Automation/AutomationRun pair (the
++    actual ORM classes from automation-reference), enough for
++    CloudSandboxBackend's org header and ConversationStart construction.
++    API-key minting (automation-service's own Cloud credential, unrelated to
++    the gateway owner-identity binding under test) is stubbed in
++    make_cloud_backend below."""
++    from openhands.automation.models import (
++        Automation,
++        AutomationRun,
++        AutomationRunAsKind,
++        AutomationRunStatus,
++    )
++
++    automation = Automation(
++        id=uuid4(),
++        user_id=UUID(owner_user_id),
++        run_as_kind=AutomationRunAsKind.USER,
++        created_by_user_id=UUID(owner_user_id),
++        org_id=org_id,
++        name='test-automation',
++        trigger={'type': 'cron', 'schedule': '0 * * * *'},
++        tarball_path='s3://bucket/tarball.tar.gz',
++        entrypoint='python3 main.py',
++    )
++    run = AutomationRun(
++        id=uuid4(),
++        automation_id=automation.id,
++        status=AutomationRunStatus.RUNNING,
++        sandbox_id=sandbox_id,
++    )
++    run.automation = automation
++    return run
++
++
++_PROVENANCE_JSON_PATH = os.path.join(
++    os.path.dirname(__file__), 'automation_source_provenance.json'
++)
++
++
++def _sha256(path: str) -> str:
++    import hashlib
++
++    with open(path, 'rb') as f:
++        return hashlib.sha256(f.read()).hexdigest()
++
++
++def assert_real_cloud_backend_provenance() -> None:
++    """Guard against silently testing the wrong (or a mirrored/mocked)
++    ``cloud.py``: assert the imported ``CloudSandboxBackend`` module was
++    actually loaded from the AUTOMATION_SOURCE_DIR checkout, and that its
++    file content matches the known-good sha256 for the pinned official
++    revision.
++
++    The expected hash and revision come from ``automation_source_
++    provenance.json`` (shipped alongside this file; sanitized -- hashes and
++    revision only, no source code) rather than from a private capture, so
++    this guard runs and is trustworthy for anyone who has only cloned
++    https://github.com/OpenHands/automation at that revision into
++    AUTOMATION_SOURCE_DIR. If AUTOMATION_CAPTURE_DIR (a separately captured
++    exact deployed-image source snapshot) is ALSO set, it is cross-checked
++    too, as a redundant extra assertion -- never a substitute for the
++    provenance-JSON check above, and never equal to AUTOMATION_SOURCE_DIR
++    itself (that would just compare the loaded file to itself)."""
++    import inspect
++    import json
++
++    from openhands.automation.backends import cloud as cloud_module
++
++    loaded_path = inspect.getfile(cloud_module)
++    assert loaded_path.startswith(AUTOMATION_SOURCE_DIR), (
++        f'CloudSandboxBackend was loaded from {loaded_path!r}, not the '
++        f'AUTOMATION_SOURCE_DIR checkout {AUTOMATION_SOURCE_DIR!r}'
++    )
++    loaded_hash = _sha256(loaded_path)
++
++    with open(_PROVENANCE_JSON_PATH) as f:
++        provenance = json.load(f)
++    expected_hash = provenance['files']['openhands/automation/backends/cloud.py']
++    assert loaded_hash == expected_hash, (
++        'The imported cloud.py does not match the known-good sha256 for '
++        f'official revision {provenance["revision"]} of '
++        f'{provenance["official_repo"]} (loaded={loaded_hash}, '
++        f'expected={expected_hash}); refusing to treat this as the real '
++        'backend.'
++    )
++
++    if AUTOMATION_CAPTURE_DIR:
++        capture_dir_real = os.path.realpath(AUTOMATION_CAPTURE_DIR)
++        source_dir_real = os.path.realpath(AUTOMATION_SOURCE_DIR)
++        assert capture_dir_real != source_dir_real, (
++            'AUTOMATION_CAPTURE_DIR must not be set equal to '
++            'AUTOMATION_SOURCE_DIR -- that would compare the loaded file '
++            'to itself instead of to an independent capture. Unset '
++            'AUTOMATION_CAPTURE_DIR if you have no separate capture; the '
++            'provenance-JSON check above is sufficient on its own.'
++        )
++        snapshot_path = os.path.join(
++            AUTOMATION_CAPTURE_DIR, 'openhands/automation/backends/cloud.py'
++        )
++        snapshot_hash = _sha256(snapshot_path)
++        assert loaded_hash == snapshot_hash, (
++            "The imported cloud.py does not match AUTOMATION_CAPTURE_DIR's "
++            f'captured snapshot (loaded={loaded_hash}, '
++            f'snapshot={snapshot_hash}).'
++        )
++
++
++def make_cloud_backend(api_url: str, run, fake_api_key: str = 'fake-automation-key'):
++    """The real CloudSandboxBackend with only its own API-key minting
++    stubbed (see make_automation_run's docstring). Verifies provenance
++    (see assert_real_cloud_backend_provenance) before returning."""
++    assert_real_cloud_backend_provenance()
++    from openhands.automation.backends.cloud import CloudSandboxBackend
++
++    backend = CloudSandboxBackend(api_url=api_url, run=run)
++    backend._ensure_api_key = AsyncMock(return_value=fake_api_key)
++    return backend
++
++
++def make_conversation_start(**kwargs):
++    from openhands.automation.backends.base import ConversationStart
++
++    return ConversationStart(**kwargs)
++
++
++def make_execution_context(sandbox_id: str, api_url: str, api_key: str):
++    from openhands.automation.backends.base import ExecutionContext
++
++    return ExecutionContext(
++        agent_url='http://agent-server:8000',
++        session_key='session-key',
++        sandbox_id=sandbox_id,
++        api_url=api_url,
++        api_key=api_key,
++    )
+diff --git a/tests/unit/server/customer_gateway/automation_source_provenance.json b/tests/unit/server/customer_gateway/automation_source_provenance.json
+new file mode 100644
+index 000000000..9433f2cd5
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/automation_source_provenance.json
+@@ -0,0 +1,19 @@
++{
++  "_comment": "Sanitized provenance only: no source code, no live identifiers. sha256 of each file below was computed from a clean `git clone https://github.com/OpenHands/automation.git && git checkout <revision>` and independently cross-checked against the vendor's deployed automation:1.32.1 image OCI labels + a separately captured exact source snapshot of that image. Ships with the test suite so a reviewer with ONLY a public clone of the official repo (no private capture) can still run and trust the provenance guard.",
++  "official_repo": "https://github.com/OpenHands/automation",
++  "revision": "1b571fd2b93c4c6ea4a58eb237fc718a8f158e4e",
++  "package_version": "1.32.1",
++  "files": {
++    "openhands/automation/backends/cloud.py": "be578ce7a57cd4eeaaf6368ee86192b99414ca49235fdbe67fcbffcf4b33bfe4",
++    "openhands/automation/backends/base.py": "6096cb542200e5d8a3f9be233eb0c34d6116dae151eb106b9264bd7d07984321",
++    "openhands/automation/dispatcher.py": "1c4194beefc39b8b1894409f7377dbdbd24dede011b38179cff9fbaafa2accb5",
++    "openhands/automation/models.py": "0a8bfe33135221fb7562d81872056682287c0c5cd4f76598ebf55e0888753862",
++    "openhands/automation/config.py": "86d47a8d88c02ac7c93f80df028f9e2c8eafaea45bc8e582dd7f25a157ac08d6",
++    "openhands/automation/auth.py": "1e0b4200825c4ab7dc7e0d505d7e28b70705760233e9d794a0a5bb972e1fd53a",
++    "openhands/automation/subjects.py": "82f3c8e230eb7bbd0f5647a1a1663a9d5be7c6375da1bb1aff4a6373b9e96845",
++    "openhands/automation/conversations.py": "0bdf1396ef7783cce210fcbfcffdd93a35d51011dfbd38c1bcd2438605f7a0e8",
++    "openhands/automation/execution.py": "516eaff3963e50f2bf5662d29c9b889a71b5895e9d3497d4d836db25f3d3a222",
++    "openhands/automation/utils/run.py": "4e8f47f99b341c822ec5b68334fae21660210355ca6ed2cbab892152016ef89e",
++    "openhands/automation/utils/api_key.py": "70d2df5ece68f936f98841cca87686a3b4d38939b926c2cbae029fe54be0f830"
++  }
++}
+diff --git a/tests/unit/server/customer_gateway/test_automation_backend_real_launch.py b/tests/unit/server/customer_gateway/test_automation_backend_real_launch.py
+new file mode 100644
+index 000000000..545ca6b0a
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_automation_backend_real_launch.py
+@@ -0,0 +1,252 @@
++"""Drives the REAL automation-backend method -- not a hand-built request.
++
++``openhands.automation.backends.cloud.CloudSandboxBackend.start_conversation``
++(imported from the frozen reference tree at
++/workspace/gateway-background-20261115/automation-reference, verified against
++the actual deployed automation image: openhands-automation==1.32.1,
++openhands-sdk==1.62.0, openhands-workspace==1.62.0, matching this Enterprise
++checkout's pinned SDK) is called directly. It builds its own real JSON POST
++body and sends it over a real httpx.AsyncClient; an httpx.MockTransport
++parses that real body into a real AppConversationStartRequest and drains the
++real LiveStatusAppConversationService.start_app_conversation() ->
++customer_gateway_hooks.bind_start_request -> server.customer_gateway.service
++binder -- the identical service fixture
++test_automation_gateway_integration.py's own tests build and assert against.
++
++Labeled scope (bounded per root review, see tests/unit/server/customer_gateway/
++_backend_adapter.py's own docstring):
++  - Real: CloudSandboxBackend.start_conversation's request construction,
++    its httpx POST/GET calls (actual serialization boundary), the real
++    service, and the real gateway binder/token-minting path.
++  - Mocked I/O: the HTTP transport itself (httpx.MockTransport, standing in
++    for the network), the automation-service's own API-key minting
++    (``backend._ensure_api_key``, a Cloud credential unrelated to the
++    gateway's owner-identity binding), and the GET conversation read-back
++    (returns only the fields the backend itself reads).
++  - The sandbox agent-server POST response (``mock_httpx_client.post``,
++    already stubbed by ``_build_real_service``) is upgraded, for the
++    positive case below, from the bare ``{"id": ...}`` fixture
++    test_automation_gateway_integration.py's own tests use (sufficient for
++    their call-shape/denial assertions) to one that echoes back the real
++    ``agent``/``workspace`` fields from the actual posted request body --
++    see ``_backend_adapter.make_sandbox_agent_server_echo_response`` and
++    live_status_app_conversation_service.py's own comment that "the
++    response echoes the same agent back through the AgentBase
++    discriminator". With that, ``ConversationInfo.model_validate`` succeeds,
++    the task reaches READY, and ``CloudSandboxBackend.start_conversation``
++    actually returns a ``StartedConversation`` -- no expected exception on
++    the positive path.
++"""
++
++from __future__ import annotations
++
++from unittest.mock import AsyncMock, patch
++from uuid import uuid4
++
++import pytest
++
++from openhands.app_server.sandbox.remote_sandbox_service import (
++    RemoteSandboxServiceInjector,
++)
++from server.customer_gateway import service as gw_service
++
++from . import _backend_adapter as ba
++from .test_automation_gateway_integration import (
++    JWT,
++    ON_ENV,
++    SYNTHETIC_ORG_ID,
++    _build_real_service,
++    _gw,
++    _sandbox,
++)
++
++
++@pytest.fixture
++def remote_runtime():
++    from types import SimpleNamespace
++
++    injector = RemoteSandboxServiceInjector(
++        api_url='http://runtime-api', api_key='test'
++    )
++    with patch.object(
++        gw_service, 'get_global_config', return_value=SimpleNamespace(sandbox=injector)
++    ):
++        yield
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_real_backend_launch_posts_owner_scoped_token_to_sandbox(monkeypatch):
++    """The actual CloudSandboxBackend.start_conversation call, driven end to
++    end through the real service and real gateway binder, actually
++    RETURNS a StartedConversation (task reaches READY) -- not an expected
++    failure. Asserts the real sandbox agent-server POST (the one the
++    gateway binder causes) carries a token scoped to the real owner -- the
++    security-relevant assertion -- on the actual successful path."""
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    owner = str(uuid4())
++    sandbox = _sandbox(owner, SYNTHETIC_ORG_ID)
++    svc, mock_httpx_client = _build_real_service(sandbox, owner)
++    ba.make_sandbox_agent_server_echo_response(mock_httpx_client)
++    gw = _gw(SYNTHETIC_ORG_ID)
++
++    conv_get = {
++        'id': str(uuid4()),
++        'created_by_user_id': owner,
++        'sandbox_id': sandbox.id,
++    }
++    transport = ba.make_transport(svc, conv_get)
++    run = ba.make_automation_run(owner, SYNTHETIC_ORG_ID, sandbox.id)
++    backend = ba.make_cloud_backend('http://test', run)
++
++    import httpx
++    from openhands.automation.backends.base import StartedConversation
++
++    with (
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(return_value=1),
++        ),
++        patch.object(gw_service, '_jwt', return_value=JWT),
++    ):
++        async with httpx.AsyncClient(
++            transport=transport, base_url='http://test'
++        ) as client:
++            ctx = ba.make_execution_context(sandbox.id, 'http://test', 'fake-key')
++            start = ba.make_conversation_start()
++            started = await backend.start_conversation(client, ctx, start)
++
++    assert isinstance(started, StartedConversation)
++    assert mock_httpx_client.post.await_count == 1
++    posted_body = mock_httpx_client.post.await_args.kwargs.get('json')
++    token = posted_body['agent']['llm']['api_key']
++    from server.customer_gateway.tokens import verify_inference_token
++
++    claims = verify_inference_token(JWT, token)
++    assert claims.user_id == owner
++    assert claims.org_id == str(SYNTHETIC_ORG_ID)
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_real_backend_launch_two_owners_same_org_get_distinct_tokens(
++    monkeypatch,
++):
++    """Two distinct human owners in the SAME synthetic org, both driven
++    through the actual successful (READY) launch path, must each receive a
++    sandbox LLM token scoped to their own user_id -- never a shared key."""
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    import httpx
++    from openhands.automation.backends.base import StartedConversation
++
++    gw = _gw(SYNTHETIC_ORG_ID)
++    tokens: dict[str, str] = {}
++    for owner in (str(uuid4()), str(uuid4())):
++        sandbox = _sandbox(owner, SYNTHETIC_ORG_ID)
++        svc, mock_httpx_client = _build_real_service(sandbox, owner)
++        ba.make_sandbox_agent_server_echo_response(mock_httpx_client)
++        conv_get = {
++            'id': str(uuid4()),
++            'created_by_user_id': owner,
++            'sandbox_id': sandbox.id,
++        }
++        transport = ba.make_transport(svc, conv_get)
++        run = ba.make_automation_run(owner, SYNTHETIC_ORG_ID, sandbox.id)
++        backend = ba.make_cloud_backend('http://test', run)
++
++        with (
++            patch.object(
++                gw_service.CustomerGatewayStore,
++                'get_enabled_org_gateway',
++                AsyncMock(return_value=gw),
++            ),
++            patch.object(
++                gw_service.CustomerGatewayStore,
++                'current_policy_version',
++                AsyncMock(return_value=1),
++            ),
++            patch.object(gw_service, '_jwt', return_value=JWT),
++        ):
++            async with httpx.AsyncClient(
++                transport=transport, base_url='http://test'
++            ) as client:
++                ctx = ba.make_execution_context(sandbox.id, 'http://test', 'fake-key')
++                start = ba.make_conversation_start()
++                started = await backend.start_conversation(client, ctx, start)
++
++        assert isinstance(started, StartedConversation)
++        posted_body = mock_httpx_client.post.await_args.kwargs.get('json')
++        tokens[owner] = posted_body['agent']['llm']['api_key']
++
++    from server.customer_gateway.tokens import verify_inference_token
++
++    owners = list(tokens)
++    assert tokens[owners[0]] != tokens[owners[1]]
++    for owner, token in tokens.items():
++        claims = verify_inference_token(JWT, token)
++        assert claims.user_id == owner
++        assert claims.org_id == str(SYNTHETIC_ORG_ID)
++
++
++@pytest.mark.usefixtures('remote_runtime')
++@pytest.mark.parametrize(
++    'denial_reason',
++    ['not_a_member', 'service_account', 'revoked', 'disabled_membership'],
++)
++async def test_real_backend_launch_denied_never_posts_to_sandbox(
++    monkeypatch, denial_reason
++):
++    """The real CloudSandboxBackend.start_conversation call must surface a
++    real gateway denial as a failure, and the sandbox must never receive a
++    POST at all (no fallback/shared key, no silent success)."""
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    owner = str(uuid4())
++    sandbox = _sandbox(owner, SYNTHETIC_ORG_ID)
++    svc, mock_httpx_client = _build_real_service(sandbox, owner)
++    gw = _gw(SYNTHETIC_ORG_ID)
++
++    conv_get = {
++        'id': str(uuid4()),
++        'created_by_user_id': owner,
++        'sandbox_id': sandbox.id,
++    }
++    transport = ba.make_transport(svc, conv_get)
++    run = ba.make_automation_run(owner, SYNTHETIC_ORG_ID, sandbox.id)
++    backend = ba.make_cloud_backend('http://test', run)
++
++    import httpx
++    from openhands.automation.exceptions import ConversationStartError
++
++    with (
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(side_effect=gw_service.CustomerGatewayDenied(denial_reason)),
++        ),
++        patch.object(gw_service, '_jwt', return_value=JWT),
++    ):
++        async with httpx.AsyncClient(
++            transport=transport, base_url='http://test'
++        ) as client:
++            ctx = ba.make_execution_context(sandbox.id, 'http://test', 'fake-key')
++            start = ba.make_conversation_start()
++            with pytest.raises(ConversationStartError) as excinfo:
++                await backend.start_conversation(client, ctx, start)
++
++    assert denial_reason in str(excinfo.value)
++    assert mock_httpx_client.post.await_count == 0
+diff --git a/tests/unit/server/customer_gateway/test_automation_dispatcher_caller_linkage.py b/tests/unit/server/customer_gateway/test_automation_dispatcher_caller_linkage.py
+new file mode 100644
+index 000000000..0e078fc6d
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_automation_dispatcher_caller_linkage.py
+@@ -0,0 +1,241 @@
++"""Real dispatcher caller -> real terminal-status persistence linkage.
++
++Adapted (not copied verbatim) from the staged public automation test
++scaffolding at /workspace/gateway-background-20261115/automation-test-
++reference/tests/test_conversation_start.py (source snapshot 9ec0356, a
++fixture-shape REFERENCE only -- not claimed as the exact deployed 1.32.1
++test source). What's reused: the backend-mocking pattern
++(``_backend_adapter``-equivalent ``MagicMock`` for ``ExecutionBackend``) and
++the call shape into ``openhands.automation.dispatcher._execute_run`` -- the
++real, unmodified caller test_automation_run_lifecycle.py's
++``mark_run_terminal``/``mark_run_status`` tests do NOT exercise. That file's
++own docstring says exactly this: "NOT established... the dispatcher's full
++`_execute_run` control flow... is NOT exercised." This file closes that gap
++for the specific claim Task 2 asks for: a launch/inference refusal reaching
++the real dispatcher caller is actually persisted as FAILED, not just the
++terminal-write helper called directly.
++
++Real: ``openhands.automation.dispatcher._execute_run`` (unmodified, imported
++from AUTOMATION_SOURCE_DIR), the real SQLAlchemy ORM models/session, and
++(transitively) the real ``mark_run_terminal`` it calls on failure.
++
++Mocked/stubbed (explicitly, no PG claim):
++  - DB: in-memory SQLite (see test_automation_run_lifecycle.py's own
++    docstring for why -- no Postgres server is available in this sandbox;
++    this is a stand-in engine, the ORM/status-write code runs unmodified).
++  - ``ExecutionBackend`` (sandbox provisioning / CloudSandboxBackend network
++    calls): a ``MagicMock`` standing in for the whole backend, exactly as
++    the reference test does -- ``backend.start_conversation`` raises the
++    real ``ConversationStartError`` exception type to simulate an inference/
++    launch refusal, or returns a real ``StartedConversation`` for the
++    success case.
++  - ``execute_in_context``/``upload_files`` (actual sandbox command
++    execution and tarball upload): patched out at the dispatcher module
++    level, same as the reference test -- no real sandbox command ever runs.
++  - ``httpx.AsyncClient`` (``mock_client``): a bare MagicMock; no real HTTP.
++
++NOT established: a live model provider, a live sandbox, or the entrypoint
++script's own ``fire_callback`` HTTP round-trip (a separate, later leg not
++reached by ``_execute_run`` itself for the refusal case below, since the
++refusal happens before any command executes).
++"""
++
++from __future__ import annotations  # noqa: I001
++
++import uuid
++from typing import cast
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++from sqlalchemy import select
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++
++from . import _backend_adapter as _ba  # noqa: F401 (openhands.__path__ side effect)
++
++from openhands.automation.backends.base import (  # noqa: E402
++    ExecutionContext,
++    StartedConversation,
++)
++from openhands.automation.config import ServiceSettings  # noqa: E402
++from openhands.automation.dispatcher import _execute_run  # noqa: E402
++from openhands.automation.exceptions import ConversationStartError  # noqa: E402
++from openhands.automation.models import (  # noqa: E402
++    Automation,
++    AutomationRun,
++    AutomationRunStatus,
++    Base,
++)
++from openhands.automation.utils import utcnow  # noqa: E402
++
++TEST_USER_ID = uuid.uuid4()
++TEST_ORG_ID = uuid.uuid4()
++PROFILE_ID = '0a1b2c3d-0000-4000-8000-000000000001'
++PROFILE_UUID = uuid.UUID(PROFILE_ID)
++
++
++@pytest.fixture
++async def session_factory():
++    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
++    async with engine.begin() as conn:
++        await conn.run_sync(Base.metadata.create_all)
++    factory = async_sessionmaker(engine, expire_on_commit=False)
++    yield factory
++    await engine.dispose()
++
++
++@pytest.fixture
++def mock_settings():
++    return ServiceSettings()
++
++
++@pytest.fixture
++def mock_client():
++    return MagicMock()
++
++
++async def _make_run(session_factory, *, preset_metadata) -> AutomationRun:
++    async with session_factory() as session:
++        automation = Automation(
++            user_id=TEST_USER_ID,
++            created_by_user_id=TEST_USER_ID,
++            org_id=TEST_ORG_ID,
++            name='nightly',
++            agent_profile_id=PROFILE_UUID,
++            model='Default',
++            preset_metadata=preset_metadata,
++            trigger={'type': 'event', 'source': 'github-events', 'on': '*'},
++            tarball_path='https://example.com/code.tar.gz',
++            entrypoint='uv run main.py',
++            enabled=True,
++        )
++        session.add(automation)
++        await session.commit()
++        run = AutomationRun(
++            automation_id=automation.id,
++            status=AutomationRunStatus.RUNNING,
++            started_at=utcnow(),
++        )
++        session.add(run)
++        await session.commit()
++        run_id = run.id
++    async with session_factory() as session:
++        from sqlalchemy.orm import selectinload
++
++        result = await session.execute(
++            select(AutomationRun)
++            .options(selectinload(AutomationRun.automation))
++            .where(AutomationRun.id == run_id)
++        )
++        return result.scalars().one()
++
++
++async def _reload(session_factory, run_id) -> AutomationRun:
++    async with session_factory() as session:
++        result = await session.execute(
++            select(AutomationRun).where(AutomationRun.id == run_id)
++        )
++        return result.scalars().one()
++
++
++def _mock_backend(start_result) -> MagicMock:
++    backend = MagicMock()
++    backend.is_local_mode = False
++    ctx = ExecutionContext(
++        agent_url='http://agent.test',
++        session_key='sk-1',
++        sandbox_id='sbx-1',
++        api_url='https://app.test',
++        api_key='sk-user',
++    )
++    backend.get_execution_context = AsyncMock(return_value=ctx)
++    backend.release_context = AsyncMock()
++    backend.build_env_vars = MagicMock(return_value={})
++    backend.get_work_dir = MagicMock(return_value='/workspace/project')
++    backend.git_connections = AsyncMock(
++        return_value={'github': None, 'gitlab': 'https://gitlab.com'}
++    )
++    if isinstance(start_result, Exception):
++        backend.start_conversation = AsyncMock(side_effect=start_result)
++    else:
++        backend.start_conversation = AsyncMock(return_value=start_result)
++    return backend
++
++
++async def test_real_dispatcher_persists_failed_on_launch_refusal(
++    session_factory, mock_settings, mock_client
++):
++    """A real inference/launch refusal (``ConversationStartError``) raised
++    from the mocked backend's ``start_conversation`` call, propagated
++    through the REAL, unmodified ``_execute_run`` caller, must be persisted
++    as a terminal FAILED row -- not a stale RUNNING, and no sandbox command
++    must ever execute."""
++    run = await _make_run(
++        session_factory, preset_metadata={'preset_type': 'prompt', 'prompt': 'hi'}
++    )
++    backend = _mock_backend(
++        ConversationStartError(
++            'OpenHands API failed to start the conversation: Sandbox not found',
++            code='start_task_error',
++        )
++    )
++
++    with (
++        patch('openhands.automation.dispatcher.get_backend', return_value=backend),
++        patch(
++            'openhands.automation.dispatcher.upload_files', new_callable=AsyncMock
++        ),
++        patch(
++            'openhands.automation.dispatcher.execute_in_context',
++            new_callable=AsyncMock,
++        ) as mock_execute,
++    ):
++        await _execute_run(run, mock_settings, session_factory, mock_client)
++
++    mock_execute.assert_not_awaited()
++    backend.release_context.assert_awaited_once()
++    reloaded = await _reload(session_factory, run.id)
++    assert reloaded.status == AutomationRunStatus.FAILED
++    assert reloaded.bash_command_id is None
++    detail = cast(dict, reloaded.status_detail)
++    assert detail['operation'] == 'start_conversation'
++    assert detail['code'] == 'start_task_error'
++
++
++async def test_real_dispatcher_does_not_fail_the_run_on_successful_launch(
++    session_factory, mock_settings, mock_client
++):
++    """The mirror positive case: a real ``StartedConversation`` returned by
++    the mocked backend must NOT be turned into a failure by the real
++    dispatcher caller, and the run must reach command execution (no false
++    failure, no run stuck short of its sandbox command)."""
++    run = await _make_run(
++        session_factory, preset_metadata={'preset_type': 'prompt', 'prompt': 'hi'}
++    )
++    backend = _mock_backend(
++        StartedConversation(
++            conversation_id=str(uuid.uuid4()), agent_profile_id=PROFILE_ID
++        )
++    )
++
++    with (
++        patch('openhands.automation.dispatcher.get_backend', return_value=backend),
++        patch(
++            'openhands.automation.dispatcher.upload_files', new_callable=AsyncMock
++        ),
++        patch(
++            'openhands.automation.dispatcher.execute_in_context',
++            new_callable=AsyncMock,
++        ) as mock_execute,
++    ):
++        mock_execute.return_value = MagicMock(
++            success=True, bash_command_id='cmd-1', error=None
++        )
++        await _execute_run(run, mock_settings, session_factory, mock_client)
++
++    mock_execute.assert_awaited_once()
++    backend.release_context.assert_not_awaited()
++    reloaded = await _reload(session_factory, run.id)
++    # _execute_run itself does not mark COMPLETED (the entrypoint's own
++    # fire_callback does, a later leg not exercised here) -- but it must not
++    # have been turned into a failure.
++    assert reloaded.status != AutomationRunStatus.FAILED
+diff --git a/tests/unit/server/customer_gateway/test_automation_gateway_integration.py b/tests/unit/server/customer_gateway/test_automation_gateway_integration.py
+new file mode 100644
+index 000000000..d978f80d4
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_automation_gateway_integration.py
+@@ -0,0 +1,358 @@
++"""Integration tests: real automation-backend conversation launch through the
++real customer-gateway binder.
++
++Mirrors tests/unit/integrations/gitlab/test_gitlab_resolver_gateway_integration.py's
++approach for the resolver trigger, but drives the automation trigger directly:
++the deployed automation-server's CloudSandboxBackend.start_conversation
++(openhands/automation/backends/cloud.py in automation-reference) issues
++``POST /api/v1/app-conversations`` with body {"sandbox_id": ..., "trigger":
++"automation", ...} -- i.e. an AppConversationStartRequest(trigger=AUTOMATION,
++sandbox_id=...). This test constructs a real LiveStatusAppConversationService
++and calls its real start_app_conversation()/_start_app_conversation() with that
++exact request shape, so the real customer_gateway_hooks.bind_start_request ->
++server.customer_gateway.service.bind_start_request code path runs end to end.
++
++Only true I/O leaves are mocked (same leaves as the GitLab harness and the
++product's own test_live_status_app_conversation_service.py):
++  - Sandbox creation / agent-server HTTP (``_wait_for_sandbox_start``,
++    ``run_setup_scripts``, the httpx client that posts to the agent server).
++  - ``CustomerGatewayStore``'s own DB-touching staticmethods (no Postgres
++    container in this sandbox -- same mocked-DB seam as the other 92+5 tests
++    in this package; NOT PG regression evidence).
++  - Title generation / pending-message processing (unrelated to gateway binding).
++
++NOT mocked: ``bind_start_request``, ``mint_for_sandbox``, ``bind_llm``,
++``authorize_inference``'s token verification, or the owner-identity source
++(``sandbox.created_by_user_id``). Two distinct human UUIDs are used in the
++SAME synthetic org to assert the real posted sandbox LLM token is scoped to
++each owner -- not a single shared key.
++"""
++
++from __future__ import annotations
++
++from datetime import UTC, datetime
++from unittest.mock import AsyncMock, Mock, patch
++from uuid import uuid4
++
++import pytest
++from openhands.agent_server.models import StartConversationRequest
++from openhands.sdk import LLM, Agent
++from openhands.sdk.workspace import LocalWorkspace
++from pydantic import SecretStr
++
++from openhands.app_server.app_conversation.app_conversation_models import (
++    AppConversationStartRequest,
++    ConversationTrigger,
++)
++from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
++    LiveStatusAppConversationService,
++)
++from openhands.app_server.sandbox.sandbox_models import (
++    AGENT_SERVER,
++    ExposedUrl,
++    SandboxInfo,
++    SandboxStatus,
++)
++from openhands.app_server.services.jwt_service import JwtService
++from openhands.app_server.utils.encryption_key import EncryptionKey
++from server.customer_gateway import service as gw_service
++from server.customer_gateway.tokens import verify_inference_token
++
++RELAY = 'https://app.example/api/customer-gateway/v1'
++ON_ENV = {
++    'CUSTOMER_GATEWAY_ENABLED': 'true',
++    'CUSTOMER_GATEWAY_RELAY_URL': RELAY,
++    'CUSTOMER_GATEWAY_TOKEN_URL': 'https://app.example/api/customer-gateway/token',
++}
++JWT = JwtService(
++    keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++)
++
++# Shared synthetic org for same-org owner-isolation assertions.
++SYNTHETIC_ORG_ID = uuid4()
++
++
++def _sandbox(owner_user_id: str, org_id) -> SandboxInfo:
++    return SandboxInfo(
++        id=f'sb-auto-{owner_user_id}',
++        created_by_user_id=owner_user_id,
++        credential_org_id=org_id,
++        sandbox_spec_id='spec',
++        status=SandboxStatus.RUNNING,
++        session_api_key='session-key',
++        exposed_urls=[
++            ExposedUrl(name=AGENT_SERVER, url='http://agent-server:8000', port=60000)
++        ],
++    )
++
++
++def _gw(org_id):
++    return gw_service.OrgGateway(
++        org_id,
++        'gw',
++        {
++            'base_url': 'https://gw.customer.example/v1',
++            'models': {'claude-sonnet': 'anthropic/claude-sonnet'},
++        },
++        datetime(2026, 11, 14, tzinfo=UTC),
++    )
++
++
++def _real_start_request_build(owner_user_id: str):
++    async def _build(*_args, **_kwargs):
++        return StartConversationRequest(
++            agent=Agent(
++                llm=LLM(
++                    model='litellm_proxy/claude-sonnet',
++                    base_url='http://litellm:4000',
++                    api_key=SecretStr('managed'),
++                    usage_id='agent',
++                )
++            ),
++            workspace=LocalWorkspace(working_dir='/tmp'),
++        )
++
++    return _build
++
++
++def _build_real_service(
++    sandbox: SandboxInfo, owner_user_id: str
++) -> tuple[LiveStatusAppConversationService, Mock]:
++    """Real service with only sandbox-creation/agent-server HTTP I/O mocked.
++
++    ``user_context`` here models the automation backend's own call: it
++    authenticates to the app server with the scheduled/definition OWNER's
++    credentials (the automation run's ``run.user_id``), not an arbitrary
++    external event actor -- there is no separate "automation actor" identity
++    in this flow, by design (see service.py's INTERACTIVE_TRIGGERS comment).
++    """
++    mock_user_context = Mock()
++    mock_user_context.get_user_id = AsyncMock(return_value=owner_user_id)
++    mock_user_context.get_user_email = AsyncMock(return_value=None)
++    mock_user_context.get_named_oauth_secrets = AsyncMock(return_value=None)
++    mock_user_context.get_user_info = AsyncMock(
++        return_value=Mock(
++            id=owner_user_id,
++            llm_model='gpt-4',
++            sandbox_grouping_strategy=Mock(),
++            confirmation_mode=False,
++            security_analyzer=None,
++            search_api_key=None,
++            mcp_config=None,
++            disabled_skills=[],
++            git_full_clone=False,
++            agent_settings=None,
++        )
++    )
++
++    mock_sandbox_service = Mock()
++    mock_sandbox_service.get_sandbox = AsyncMock(return_value=sandbox)
++    mock_sandbox_spec_service = Mock()
++    mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
++        return_value=Mock(working_dir='/workspace/project')
++    )
++    mock_app_conversation_info_service = Mock()
++    mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
++    mock_app_conversation_start_task_service = Mock()
++    mock_app_conversation_start_task_service.save_app_conversation_start_task = (
++        AsyncMock(side_effect=lambda task: task)
++    )
++    mock_event_callback_service = Mock()
++    mock_event_callback_service.save_event_callback = AsyncMock()
++    mock_event_service = Mock()
++    mock_httpx_client = Mock()
++    mock_response = Mock()
++    mock_response.json.return_value = {'id': str(uuid4())}
++    mock_response.raise_for_status = Mock()
++    mock_httpx_client.post = AsyncMock(return_value=mock_response)
++    mock_pending_message_service = Mock()
++
++    svc = LiveStatusAppConversationService(
++        init_git_in_empty_workspace=True,
++        user_context=mock_user_context,
++        app_conversation_info_service=mock_app_conversation_info_service,
++        app_conversation_start_task_service=mock_app_conversation_start_task_service,
++        event_callback_service=mock_event_callback_service,
++        event_service=mock_event_service,
++        sandbox_service=mock_sandbox_service,
++        sandbox_spec_service=mock_sandbox_spec_service,
++        jwt_service=Mock(),
++        pending_message_service=mock_pending_message_service,
++        sandbox_startup_timeout=30,
++        sandbox_startup_poll_frequency=1,
++        max_num_conversations_per_sandbox=20,
++        httpx_client=mock_httpx_client,
++        web_url='https://test.example.com',
++        openhands_provider_base_url='https://provider.example.com',
++        access_token_hard_timeout=None,
++        app_mode='test',
++    )
++
++    svc._build_start_conversation_request_for_user = AsyncMock(
++        side_effect=_real_start_request_build(owner_user_id)
++    )
++
++    async def mock_wait_for_sandbox(task):
++        task.sandbox_id = sandbox.id
++        yield task
++
++    async def mock_run_setup_scripts(
++        task, sandbox_, workspace, agent_server_url, conversation_id
++    ):
++        yield task
++
++    svc._wait_for_sandbox_start = mock_wait_for_sandbox
++    svc.run_setup_scripts = mock_run_setup_scripts
++    svc._load_hooks_from_workspace = AsyncMock(return_value=None)
++    svc._process_pending_messages = AsyncMock()
++    svc._sync_start_title = AsyncMock()
++    svc._ensure_profile_runtime = AsyncMock(
++        return_value=Mock(browser_available=True, sdk_version='1.62.0')
++    )
++
++    return svc, mock_httpx_client
++
++
++async def _drive_start(svc: LiveStatusAppConversationService, owner_user_id: str):
++    """Build the exact AppConversationStartRequest the automation backend's
++    CloudSandboxBackend.start_conversation posts (trigger=AUTOMATION,
++    sandbox_id set, no secrets/prompt in the body), and drain the real
++    start_app_conversation()/_start_app_conversation() async generator -- the
++    same call app_conversation_router.py's POST /api/v1/app-conversations
++    makes -- to completion."""
++    start_request = AppConversationStartRequest(
++        sandbox_id=f'sb-auto-{owner_user_id}',
++        trigger=ConversationTrigger.AUTOMATION,
++        tags={},
++    )
++    results = []
++    async for item in svc.start_app_conversation(start_request):
++        results.append(item)
++    return results
++
++
++@pytest.fixture
++def remote_runtime():
++    from types import SimpleNamespace
++
++    from openhands.app_server.sandbox.remote_sandbox_service import (
++        RemoteSandboxServiceInjector,
++    )
++
++    injector = RemoteSandboxServiceInjector(
++        api_url='http://runtime-api', api_key='test'
++    )
++    with patch.object(
++        gw_service, 'get_global_config', return_value=SimpleNamespace(sandbox=injector)
++    ):
++        yield
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_automation_real_launch_scopes_token_to_each_distinct_owner(
++    monkeypatch,
++):
++    """Two distinct human owners, SAME synthetic org: the real
++    bind_start_request -> mint_for_sandbox path must mint a token scoped to
++    EACH owner, never a shared key. Drives the actual automation trigger
++    request shape through the real service, not a hand-minted token."""
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    owner_a = str(uuid4())
++    owner_b = str(uuid4())
++    gw = _gw(SYNTHETIC_ORG_ID)
++
++    posted_tokens: dict[str, str] = {}
++
++    for owner in (owner_a, owner_b):
++        sandbox = _sandbox(owner, SYNTHETIC_ORG_ID)
++        svc, mock_httpx_client = _build_real_service(sandbox, owner)
++        with (
++            patch.object(
++                gw_service.CustomerGatewayStore,
++                'get_enabled_org_gateway',
++                AsyncMock(return_value=gw),
++            ),
++            patch.object(
++                gw_service.CustomerGatewayStore,
++                'current_policy_version',
++                AsyncMock(return_value=1),
++            ),
++            patch.object(gw_service, '_jwt', return_value=JWT),
++        ):
++            await _drive_start(svc, owner)
++
++        assert mock_httpx_client.post.await_count == 1
++        posted_body = mock_httpx_client.post.await_args.kwargs.get(
++            'json'
++        ) or mock_httpx_client.post.await_args[1].get('json')
++        token = posted_body['agent']['llm']['api_key']
++        assert posted_body['agent']['llm']['base_url'] == RELAY
++        claims = verify_inference_token(JWT, token)
++        assert claims.user_id == owner
++        assert claims.org_id == str(SYNTHETIC_ORG_ID)
++        posted_tokens[owner] = token
++
++    # The two owners' tokens must not be the same credential.
++    assert posted_tokens[owner_a] != posted_tokens[owner_b]
++    # Cross-check: owner A's token does not verify as owner B's.
++    claims_a = verify_inference_token(JWT, posted_tokens[owner_a])
++    claims_b = verify_inference_token(JWT, posted_tokens[owner_b])
++    assert claims_a.user_id != claims_b.user_id
++    assert claims_a.session_id != claims_b.session_id
++
++
++@pytest.mark.usefixtures('remote_runtime')
++@pytest.mark.parametrize(
++    'denial_reason',
++    ['not_a_member', 'service_account', 'revoked', 'disabled_membership'],
++)
++async def test_automation_real_launch_denies_on_store_resolution_failures(
++    monkeypatch, denial_reason
++):
++    """Bad/missing/disabled/service-account mappings propagate as real
++    CustomerGatewayDenied -> CustomerGatewayLaunchError through the actual
++    mint_for_sandbox call (not a mock branch standing in for the denial).
++    mint_for_sandbox itself only raises 'sandbox_inactive'/'sandbox_unowned';
++    the membership/service-account denials below are
++    CustomerGatewayStore.current_policy_version's own documented contract
++    (prior worker's separate storage-layer evidence
++    tests/unit/storage/test_customer_gateway_store.py), reproduced here via
++    the real exception type through the real binder call so the launch-path
++    propagation itself -- not just the store method in isolation -- is
++    covered."""
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++    owner = str(uuid4())
++    sandbox = _sandbox(owner, SYNTHETIC_ORG_ID)
++    gw = _gw(SYNTHETIC_ORG_ID)
++    svc, mock_httpx_client = _build_real_service(sandbox, owner)
++
++    with (
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            gw_service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(
++                side_effect=gw_service.CustomerGatewayDenied(denial_reason)
++            ),
++        ),
++        patch.object(gw_service, '_jwt', return_value=JWT),
++    ):
++        results = await _drive_start(svc, owner)
++
++    # The real _start_app_conversation does not raise out of the async
++    # generator on a CustomerGatewayLaunchError; it yields a terminal ERROR
++    # start-task (same contract production's own error handling relies on).
++    assert results, 'expected at least one yielded start task'
++    final = results[-1]
++    assert final.status.value == 'ERROR'
++    assert denial_reason in (final.detail or '')
++    # No sandbox-bound llm.api_key was ever posted to the agent server.
++    assert mock_httpx_client.post.await_count == 0
+diff --git a/tests/unit/server/customer_gateway/test_automation_run_lifecycle.py b/tests/unit/server/customer_gateway/test_automation_run_lifecycle.py
+new file mode 100644
+index 000000000..b73394fae
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_automation_run_lifecycle.py
+@@ -0,0 +1,185 @@
++"""Real callback/persistence lifecycle tests for the automation-reference
++source (openhands/automation/utils/run.py, models.py), NOT a reimplementation.
++
++Scope and what's mocked/stubbed (see also PROGRESS.md / handoff v2 FINDINGS):
++  - DB: an in-memory SQLite engine running the REAL SQLAlchemy ORM models
++    (``AutomationRun``, ``Automation``) and the REAL ``mark_run_status`` /
++    ``mark_run_terminal`` functions from ``openhands.automation.utils.run``.
++    No Postgres container is available in this sandbox; SQLite is a stand-in
++    database engine, not a mock of the status-marking logic itself, which
++    runs unmodified.
++  - Network/sandbox/LLM: not exercised at all here -- this file tests only
++    the callback/dispatcher-side PERSISTENCE contract (the terminal status
++    write), which is the explicit Task 2 ask: "assert FAILED terminal
++    stored status/error for an inference/launch refusal, successful case
++    completion, no false success or stale RUNNING."
++  - Cross-repo dependency: ``openhands.automation.utils.run`` transitively
++    imports ``openhands.automation.schemas`` (via ``git_sync``), which
++    imports ``from openhands.workspace import RepoSource`` -- a real
++    OpenHands Cloud client package, confirmed (per root's isolated
++    one-off-container image check) to be ``openhands-workspace==1.62.0`` in
++    the actual deployed automation image alongside
++    ``openhands-automation==1.32.1`` and ``openhands-sdk==1.62.0``. That
++    exact package is installed here with ``--no-deps`` (no SDK version
++    change) so this real code imports without any shim or reimplementation.
++
++NOT established by this file: the dispatcher's full `_execute_run` control
++flow (sandbox provisioning, `CloudSandboxBackend.start_conversation`, the
++entrypoint script's own `fire_callback` HTTP call) is NOT exercised -- only
++the DB-side terminal-status write every one of those failure/success paths
++ultimately calls through `_fail()` / `mark_run_terminal()`. No live model
++provider or sandbox execution is claimed.
++"""
++
++from __future__ import annotations  # noqa: I001
++
++import uuid
++
++import pytest
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++
++# Extends the ``openhands`` namespace package with AUTOMATION_SOURCE_DIR's
++# ``openhands/automation`` submodule (see _backend_adapter.py's own
++# docstring for why this can't just be a sys.path insert); must run, and
++# must be imported, before the openhands.automation imports below -- keep
++# this import block separate (ruff's import-sort would otherwise merge and
++# reorder it ahead of this comment, breaking that ordering requirement).
++from . import _backend_adapter as _ba  # noqa: E402,F401
++
++from openhands.automation.models import (  # noqa: E402
++    Automation,
++    AutomationRun,
++    AutomationRunStatus,
++    Base,
++)
++from openhands.automation.utils.run import mark_run_status, mark_run_terminal  # noqa: E402
++
++
++@pytest.fixture
++async def session_factory():
++    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
++    async with engine.begin() as conn:
++        await conn.run_sync(Base.metadata.create_all)
++    factory = async_sessionmaker(engine, expire_on_commit=False)
++    yield factory
++    await engine.dispose()
++
++
++async def _make_running_run(session_factory) -> AutomationRun:
++    """A real PENDING->RUNNING run row, persisted through the real ORM."""
++    owner_id = uuid.uuid4()
++    async with session_factory() as session:
++        automation = Automation(
++            id=uuid.uuid4(),
++            user_id=owner_id,
++            created_by_user_id=owner_id,
++            org_id=uuid.uuid4(),
++            name='test-automation',
++            trigger={'type': 'cron', 'schedule': '0 * * * *'},
++            tarball_path='s3://bucket/tarball.tar.gz',
++            entrypoint='python3 main.py',
++        )
++        session.add(automation)
++        await session.flush()
++        run = AutomationRun(
++            id=uuid.uuid4(),
++            automation_id=automation.id,
++            status=AutomationRunStatus.PENDING,
++        )
++        session.add(run)
++        await session.commit()
++        await mark_run_status(session, run, AutomationRunStatus.RUNNING)
++        await session.commit()
++        return run
++
++
++async def test_failed_launch_refusal_persists_failed_with_error(session_factory):
++    """An inference/launch refusal (e.g. the customer-gateway's
++    CustomerGatewayLaunchError str, or a ConversationStartError) must leave
++    the run FAILED with its error recorded -- not stale RUNNING, not a false
++    COMPLETED."""
++    run = await _make_running_run(session_factory)
++    await mark_run_terminal(
++        session_factory,
++        run,
++        AutomationRunStatus.FAILED,
++        'customer gateway access denied: not_a_member',
++    )
++
++    async with session_factory() as session:
++        from sqlalchemy import select
++
++        result = await session.execute(
++            select(AutomationRun).where(AutomationRun.id == run.id)
++        )
++        db_run = result.scalars().first()
++
++    assert db_run.status == AutomationRunStatus.FAILED
++    assert db_run.error_detail == 'customer gateway access denied: not_a_member'
++    assert db_run.completed_at is not None
++    assert db_run.status != AutomationRunStatus.RUNNING
++
++
++async def test_successful_run_persists_completed_not_failed(session_factory):
++    run = await _make_running_run(session_factory)
++    await mark_run_terminal(session_factory, run, AutomationRunStatus.COMPLETED)
++
++    async with session_factory() as session:
++        from sqlalchemy import select
++
++        result = await session.execute(
++            select(AutomationRun).where(AutomationRun.id == run.id)
++        )
++        db_run = result.scalars().first()
++
++    assert db_run.status == AutomationRunStatus.COMPLETED
++    assert db_run.error_detail is None
++    assert db_run.completed_at is not None
++
++
++async def test_mark_run_terminal_does_not_overwrite_already_terminal_run(
++    session_factory,
++):
++    """mark_run_terminal's own race guard: only transitions a run that is
++    STILL RUNNING. A run already marked COMPLETED (e.g. by a prior/duplicate
++    callback) must not be flipped to FAILED by a later, stale failure
++    signal -- this is the real 'no false success / no stale overwrite'
++    safety net, exercised against the real DB-backed function, not asserted
++    by inspection of the source alone."""
++    run = await _make_running_run(session_factory)
++    await mark_run_terminal(session_factory, run, AutomationRunStatus.COMPLETED)
++
++    # A second, stale FAILED signal arrives after the run already completed.
++    await mark_run_terminal(session_factory, run, AutomationRunStatus.FAILED, 'stale')
++
++    async with session_factory() as session:
++        from sqlalchemy import select
++
++        result = await session.execute(
++            select(AutomationRun).where(AutomationRun.id == run.id)
++        )
++        db_run = result.scalars().first()
++
++    # Still COMPLETED: the guard refused the later stale FAILED transition.
++    assert db_run.status == AutomationRunStatus.COMPLETED
++    assert db_run.error_detail is None
++
++
++async def test_run_never_left_running_after_terminal_call(session_factory):
++    """Belt-and-suspenders for the 'no stale RUNNING' requirement: after any
++    terminal call, status is never RUNNING, regardless of which terminal
++    status was requested."""
++    for status in (AutomationRunStatus.FAILED, AutomationRunStatus.COMPLETED):
++        run = await _make_running_run(session_factory)
++        await mark_run_terminal(
++            session_factory, run, status, 'boom' if status.name == 'FAILED' else None
++        )
++        async with session_factory() as session:
++            from sqlalchemy import select
++
++            result = await session.execute(
++                select(AutomationRun).where(AutomationRun.id == run.id)
++            )
++            db_run = result.scalars().first()
++        assert db_run.status != AutomationRunStatus.RUNNING
++        assert db_run.status == status
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_export.py b/tests/unit/server/customer_gateway/test_customer_gateway_export.py
 new file mode 100644
-index 0000000..7a80602
+index 000000000..7a8060292
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_export.py
 @@ -0,0 +1,214 @@
@@ -2364,7 +4367,7 @@ index 0000000..7a80602
 +    assert all(api_keys.refuse_customer_gateway_org in deps for deps in paths.values())
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_relay.py b/tests/unit/server/customer_gateway/test_customer_gateway_relay.py
 new file mode 100644
-index 0000000..f0bcd11
+index 000000000..f0bcd116b
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_relay.py
 @@ -0,0 +1,284 @@
@@ -2654,7 +4657,7 @@ index 0000000..f0bcd11
 +    )
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_relay_limits.py b/tests/unit/server/customer_gateway/test_customer_gateway_relay_limits.py
 new file mode 100644
-index 0000000..5060262
+index 000000000..5060262f4
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_relay_limits.py
 @@ -0,0 +1,195 @@
@@ -2855,7 +4858,7 @@ index 0000000..5060262
 +    assert relay._inflight == 0 and relay._user_inflight == {}
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_saas_routes.py b/tests/unit/server/customer_gateway/test_customer_gateway_saas_routes.py
 new file mode 100644
-index 0000000..94e3a08
+index 000000000..94e3a088e
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_saas_routes.py
 @@ -0,0 +1,115 @@
@@ -2976,7 +4979,7 @@ index 0000000..94e3a08
 +        assert code != 'invalid_token', key
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_saas_users_me.py b/tests/unit/server/customer_gateway/test_customer_gateway_saas_users_me.py
 new file mode 100644
-index 0000000..f66a989
+index 000000000..f66a98939
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_saas_users_me.py
 @@ -0,0 +1,151 @@
@@ -3133,7 +5136,7 @@ index 0000000..f66a989
 +    assert 'customer_gateway' not in data
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_sdk_refresh.py b/tests/unit/server/customer_gateway/test_customer_gateway_sdk_refresh.py
 new file mode 100644
-index 0000000..a5df385
+index 000000000..a5df385aa
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_sdk_refresh.py
 @@ -0,0 +1,232 @@
@@ -3371,10 +5374,10 @@ index 0000000..a5df385
 +    assert upstream_calls == []
 diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_units.py b/tests/unit/server/customer_gateway/test_customer_gateway_units.py
 new file mode 100644
-index 0000000..ed1eb11
+index 000000000..926bcdfa5
 --- /dev/null
 +++ b/tests/unit/server/customer_gateway/test_customer_gateway_units.py
-@@ -0,0 +1,610 @@
+@@ -0,0 +1,715 @@
 +"""DB-free tests: feature-off identity, token contract, LLM binding, profile validation, env wiring."""
 +
 +import json
@@ -3386,9 +5389,12 @@ index 0000000..ed1eb11
 +import jwt
 +import pytest
 +from fastapi import HTTPException
++from openhands.agent_server.models import StartConversationRequest
++from openhands.sdk import LLM, Agent
++from openhands.sdk.context.condenser import LLMSummarizingCondenser
++from openhands.sdk.workspace import LocalWorkspace
 +from pydantic import SecretStr
 +
-+from openhands.agent_server.models import StartConversationRequest
 +from openhands.app_server.sandbox.k8s_agent_sandbox_service import (
 +    K8sAgentSandboxServiceInjector,
 +)
@@ -3399,9 +5405,6 @@ index 0000000..ed1eb11
 +from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 +from openhands.app_server.utils import customer_gateway_hooks
 +from openhands.app_server.utils.encryption_key import EncryptionKey
-+from openhands.sdk import LLM, Agent
-+from openhands.sdk.context.condenser import LLMSummarizingCondenser
-+from openhands.sdk.workspace import LocalWorkspace
 +from server.customer_gateway import service
 +from server.customer_gateway.config import get_settings
 +from server.customer_gateway.profile import ProfileError, parse_profile
@@ -3755,8 +5758,6 @@ index 0000000..ed1eb11
 +@pytest.mark.parametrize(
 +    'trigger',
 +    [
-+        'automation',
-+        'resolver',
 +        'slack',
 +        'jira',
 +        'jira_dc',
@@ -3771,6 +5772,113 @@ index 0000000..ed1eb11
 +    a, b, c = _on_store(_gw(sb.credential_org_id))
 +    with a, b, c, pytest.raises(service.CustomerGatewayLaunchError, match=trigger):
 +        await customer_gateway_hooks.bind_start_request(_request(), sb, trigger)
++
++
++@pytest.mark.usefixtures('remote_runtime')
++@pytest.mark.parametrize('trigger', ['automation', 'resolver'])
++async def test_sandbox_owner_launch_binds_for_automation_and_resolver(
++    monkeypatch, trigger
++):
++    """automation/resolver are owner-attributed, not ambient: the sandbox's own
++    `created_by_user_id` (set upstream, before this hook runs — see
++    webhook_router.py's own docstring for automation, and
++    integrations/resolver_org_router.py + each *_view.py's own actor/org
++    resolution for resolver, which is shared by every resolver integration, not
++    only GitLab) is the only identity ever minted into the token. This exercises
++    the real `bind_start_request` path via `live_status_app_conversation_service.py`'s
++    actual call shape, not a hand-minted token."""
++    _on(monkeypatch)
++    sb = _sandbox()
++    gw = _gw(sb.credential_org_id)
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(return_value=3),
++        ),
++        patch.object(service, '_jwt', return_value=JWT),
++    ):
++        out = await customer_gateway_hooks.bind_start_request(_request(), sb, trigger)
++    llm = out.agent.llm
++    assert llm.base_url == RELAY
++    p = verify_inference_token(JWT, llm.api_key.get_secret_value())
++    assert (p.user_id, p.org_id, p.session_id) == (
++        sb.created_by_user_id,
++        str(sb.credential_org_id),
++        sb.id,
++    )
++
++
++@pytest.mark.usefixtures('remote_runtime')
++@pytest.mark.parametrize(
++    'trigger,denial',
++    [
++        # Unmapped resolver actor / automation owner with no org-member row at all.
++        ('automation', 'not_a_member'),
++        ('resolver', 'not_a_member'),
++        # A real member+credential row whose *account* is not human — this is the
++        # actual check in storage/customer_gateway_store.py:CustomerGatewayStore._load,
++        # which fires even though membership and a credential both exist, not merely
++        # "no such member row".
++        ('automation', 'service_account'),
++        ('resolver', 'service_account'),
++    ],
++)
++async def test_sandbox_owner_launch_still_denies_non_human_or_unmapped(
++    monkeypatch, trigger, denial
++):
++    """Allowlisting the trigger must not bypass the existing
++    membership/account-type/credential checks in CustomerGatewayStore.resolve()."""
++    _on(monkeypatch)
++    sb = _sandbox()
++    gw = _gw(sb.credential_org_id)
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(side_effect=service.CustomerGatewayDenied(denial)),
++        ),
++        pytest.raises(service.CustomerGatewayLaunchError, match=denial),
++    ):
++        await customer_gateway_hooks.bind_start_request(_request(), sb, trigger)
++
++
++async def test_org_gateway_for_sandbox_keys_only_on_sandboxs_own_org(monkeypatch):
++    """A resolver conversation mis-routed to the wrong org (e.g. resolve_org_for_repo
++    falling back to a personal/unclaimed-repo org per its own documented contract)
++    must not pick up a *different* org's gateway — org_gateway_for_sandbox looks up
++    only `sandbox.credential_org_id`, never any other org, regardless of which other
++    orgs have a gateway enabled."""
++    _on(monkeypatch)
++    sb = _sandbox()
++    other_org = uuid4()
++    assert other_org != sb.credential_org_id
++    looked_up: list = []
++
++    async def fake_get_enabled_org_gateway(org_id):
++        looked_up.append(org_id)
++        if org_id == other_org:
++            return _gw(other_org)
++        return None
++
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        fake_get_enabled_org_gateway,
++    ):
++        result = await service.org_gateway_for_sandbox(sb)
++    assert result is None
++    assert looked_up == [sb.credential_org_id]
 +
 +
 +async def test_non_interactive_launch_unchanged_when_off(off, store_untouched):
@@ -3987,7 +6095,7 @@ index 0000000..ed1eb11
 +    lookup.assert_not_called()
 diff --git a/tests/unit/storage/test_customer_gateway_settings_save.py b/tests/unit/storage/test_customer_gateway_settings_save.py
 new file mode 100644
-index 0000000..ff70ad6
+index 000000000..ff70ad665
 --- /dev/null
 +++ b/tests/unit/storage/test_customer_gateway_settings_save.py
 @@ -0,0 +1,166 @@
@@ -4159,7 +6267,7 @@ index 0000000..ff70ad6
 +    ensure.assert_called_once()
 diff --git a/tests/unit/storage/test_customer_gateway_store.py b/tests/unit/storage/test_customer_gateway_store.py
 new file mode 100644
-index 0000000..b165869
+index 000000000..b1658691d
 --- /dev/null
 +++ b/tests/unit/storage/test_customer_gateway_store.py
 @@ -0,0 +1,358 @@
@@ -4523,7 +6631,7 @@ index 0000000..b165869
 +    assert (await store.get_enabled_org_gateway(ORG_ID)).enabled_since > first
 diff --git a/tests/unit/test_migration_216_customer_gateway_retained.py b/tests/unit/test_migration_216_customer_gateway_retained.py
 new file mode 100644
-index 0000000..f09a678
+index 000000000..f09a6781d
 --- /dev/null
 +++ b/tests/unit/test_migration_216_customer_gateway_retained.py
 @@ -0,0 +1,113 @@

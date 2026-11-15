@@ -1,0 +1,87 @@
+{
+  "status": "Source-tested customer evaluation beta; live background staging qualification remains",
+  "recorded_date": "2026-11-15",
+  "versions": {
+    "enterprise": "1.92.0",
+    "sdk": "1.62.0",
+    "workspace": "1.62.0",
+    "automation": "1.32.1"
+  },
+  "enterprise_base_commit": "7647eab7b963a5ed0a564215c082dd66331b79a6",
+  "automation_revision": "1b571fd2b93c4c6ea4a58eb237fc718a8f158e4e",
+  "gateway_service_sha256": "304eeb1d83e4224ae59856f0d5e75deb55ce9da17059514089709354b25ceb47",
+  "runtime_functional_change": "Admit native automation/resolver triggers through existing owner-scoped binder",
+  "migration_change": "Docstring only; executable migration AST unchanged",
+  "compose_change": "Inherit stock automation event forwarding instead of forcing it off",
+  "independent_tests": {
+    "tests": 119,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "private_capture_required": false,
+    "source_revision_and_runtime_hash_asserted": true
+  },
+  "source_build_replay": {
+    "base_guard": true,
+    "full_patch_applied": true,
+    "doc_correction_applied": true,
+    "overlay_guard": true,
+    "runtime_files_verified": 23,
+    "patch_sections": 42,
+    "python_files_compiled": 40,
+    "patch_sha256": "a3d9c99cefe07695b0482046d9b7ad7ce04c402c8ee94d6666bf21a1686f363b"
+  },
+  "verified_contracts": [
+    "real GitLab issue/MR caller and resolver user context",
+    "real automation backend returns StartedConversation through real Enterprise binder",
+    "two owners in same synthetic org receive distinct owner-scoped tokens",
+    "store-denial propagation without shared-key fallback",
+    "real dispatcher persists launch refusal as FAILED and skips entrypoint execution",
+    "successful dispatcher reaches command execution",
+    "real ORM terminal-state and stale-write guards using SQLite"
+  ],
+  "identity_policy": {
+    "automations": "automation definition user_id and org_id, for scheduled/manual/event launches",
+    "gitlab_resolver": "existing mapped native actor in resolved organization",
+    "service_accounts": "refused; separate budget-owner policy required"
+  },
+  "substitutions": [
+    "external HTTP transport and GitLab I/O",
+    "sandbox provisioning and agent-server responses",
+    "internal OpenHands API-key minting",
+    "uploads and entrypoint execution",
+    "SQLite in-memory instead of PostgreSQL"
+  ],
+  "not_live_qualified": [
+    "scheduler timing and webhook authentication/delivery/posting",
+    "background model-provider spend and post-start budget/model denial",
+    "customer SSO/repository/network configuration",
+    "entrypoint completion-callback HTTP round-trip",
+    "background long-running refresh/rotation/outage recovery",
+    "custom plugin loading and arbitrary legacy SDK scripts",
+    "production HA/load/disaster recovery",
+    "other gateways"
+  ],
+  "baseline_live_evidence": [
+    "compose-evidence.json",
+    "EVIDENCE.json"
+  ],
+  "no_new_customer_gateway_admin_permissions": true,
+  "sdk_source_changes": 0,
+  "frontend_source_changes": 0,
+  "image_build": {
+    "pinned_base_image_build_passed": true,
+    "installed_sdk": "1.62.0",
+    "built_image_runtime_files_verified": 23,
+    "service_hash_matches_tested_source": true,
+    "candidate_started_as_application": false
+  },
+  "compose_config": {
+    "compose_config_valid": true,
+    "gateway_enabled": true,
+    "user_llm_configuration_disabled": true,
+    "event_forwarding_enabled": true,
+    "bundled_litellm_absent": true
+  },
+  "working_demo_unchanged_verified": true
+}

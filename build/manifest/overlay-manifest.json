@@ -5,7 +5,7 @@
    "path": "migrations/versions/216_add_customer_gateway_tables.py",
    "key": "f000.py",
    "base_sha256": null,
-   "overlay_sha256": "417662a809f473d58b9e78f9c0730c5d790d3b679c6f663f20d1bf8b91f12c09"
+   "overlay_sha256": "26dba62aed6cd67a3bf2aafbd2d96c677ce5884745cee38d2ad800d5dd12518a"
   },
   {
    "path": "openhands/app_server/app_conversation/app_conversation_router.py",
@@ -101,7 +101,7 @@
    "path": "server/customer_gateway/service.py",
    "key": "f016.py",
    "base_sha256": null,
-   "overlay_sha256": "a5773be67272dfe00eea024cb49055dbcdb76c536ab285c48d686a9772374310"
+   "overlay_sha256": "304eeb1d83e4224ae59856f0d5e75deb55ce9da17059514089709354b25ceb47"
   },
   {
    "path": "server/customer_gateway/tokens.py",

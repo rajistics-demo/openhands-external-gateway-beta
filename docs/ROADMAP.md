@@ -6,9 +6,11 @@ Two regular SSO members in one organization completed native conversations throu
 
 ## Human-owned background workflows
 
-Automations and GitLab resolver launches remain gated in this snapshot. This is the current preview's scope restriction. Where those workflows already identify a human OpenHands user, the intended next step is to reuse that established identity and resolve that member's key through the same relay. This does not require inventing another identity system. An actor without an OpenHands account does not gain an account or credential through this integration.
+Native app-started automation and GitLab resolver launches are admitted through the existing binder. A coordinator rerun passed 119 gateway/automation/GitLab tests against exact source pins. The automation backend returns a ready conversation, owner tokens stay distinct, and the actual dispatcher persists a launch refusal as FAILED in SQLite.
 
-Before lifting each guard, validate the actual launch path, correct owner/trigger identity, organization membership, model/budget enforcement, auxiliary calls, token refresh, rotation and negative/no-fallback cases. Preserve the existing failure behavior for unmapped actors. Do not infer success from the interactive-conversation tests.
+Automations use the definition's native user/org; new GitLab resolver conversations use the existing mapped actor and resolved org. There is no automatic external-event-actor identity synchronization. Service accounts remain separate.
+
+The next acceptance step is the customer's authorized live staging workflow: scheduler/webhook delivery, repository permissions, provider spend attribution, model/budget denials after startup, long-running refresh, rotation, outage/recovery and the entrypoint completion-callback HTTP leg. These were not live-run by the new source tests. See [ownership and setup](BACKGROUND-WORKFLOWS.md).
 
 ## Service accounts
 

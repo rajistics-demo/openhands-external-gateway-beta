@@ -4,7 +4,7 @@ This is a portable evaluation overlay for Enterprise **1.92.0**, base commit `76
 
 Read the gateway profile, relay, token/service and encrypted-store code first. Then inspect the conversation launch, profile switch, sandbox/session and settings hooks. The hooks bind the same identity and scoped-token mechanism across supported native inference paths. Unsupported launch paths fail closed.
 
-`build/patches/enterprise-1.92.0-customer-gateway.patch` contains the original change and regression tests against the pinned Enterprise source. The separate migration docstring correction changes documentation only. `build/manifest/overlay-manifest.json` records the expected base and final hashes of all 23 product files. Build-time guards refuse a mismatched base.
+`build/patches/enterprise-1.92.0-customer-gateway.patch` contains the original change and regression tests against the pinned Enterprise source. The main patch retains the original migration section; the separate migration docstring correction is applied next by the source build. Both are required to match the reviewed overlay hash. `build/manifest/overlay-manifest.json` records the expected base and final hashes of all 23 product files. Build-time guards refuse a mismatched base.
 
 | Packaged file | Original Enterprise path |
 |---|---|
@@ -36,4 +36,4 @@ Read the gateway profile, relay, token/service and encrypted-store code first. T
 
 `evaluate` and the additive Compose files provide the dedicated-host evaluation deployment. They generate/preserve service secrets, set the app origin and Docker network, disable the bundled proxy and keep customer administration outside the application. The optional fixture is not the customer integration itself.
 
-The final tested runtime files are unchanged from the reviewed 23-file snapshot. Repository handoff changes concern documentation, distribution authorization and package integrity metadata. Refer to `compose-evidence.json` for observed behavior and `EVIDENCE.json` for the separate prior GKE regression run.
+The background revision changes `server/customer_gateway/service.py` (`f016.py`) to admit automation/resolver triggers; 21 runtime overlays remain at the baseline; the migration overlay changes its docstring only, matching the separate source-build correction. Its upgrade/downgrade code is unchanged. The Compose overlay restores stock event forwarding. New tests and build hashes record this revision separately from the earlier live pilot. Refer to `compose-evidence.json` for observed behavior and `EVIDENCE.json` for the separate prior GKE regression run.

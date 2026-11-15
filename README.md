@@ -30,6 +30,7 @@ Read [Design decisions](docs/DESIGN-DECISIONS.md) for the alternatives and secur
 
 - [Architecture and exact gateway API permissions](docs/API-PERMISSIONS.md)
 - [Product code map](docs/CODE-MAP.md)
+- [Automation and GitLab ownership/setup](docs/BACKGROUND-WORKFLOWS.md), [validation](docs/BACKGROUND-VALIDATION.md) and [machine-readable results](background-validation.json)
 - [Current support and next steps](docs/ROADMAP.md)
 - [Key/security boundaries](docs/TOPOLOGY.md)
 - **[Step-by-step customer setup](docs/SETUP.md)**, [operator commands](cli/README.md), [verification](docs/VERIFICATION.md) and [rollback](docs/ROLLBACK.md)
@@ -65,7 +66,7 @@ No Keycloak service or Keycloak-specific backend setting is required. Use your s
 
 The default package connects to your existing LiteLLM. `--demo` adds a separate, optional LiteLLM/provider-stub fixture; it does not provision identities or import keys automatically. Real-provider configuration is described in [the provider example](docs/real-provider-example.md).
 
-## What was observed
+## What was observed in the interactive baseline
 
 The AWS native Compose evaluation used two regular SSO members, real Haiku and Sonnet inference, separate personal keys, tool execution, model denial, central budget denial and server-side rotation. The OpenHands conversation UI displayed model profiles, token counts and conversation cost. LiteLLM displayed per-key/per-user spend and the configured user budget.
 
@@ -75,13 +76,13 @@ The AWS native Compose evaluation used two regular SSO members, real Haiku and S
 
 ## Boundaries
 
-- Interactive human conversations are validated. The current code still gates automation and GitLab resolver launches; validating and enabling human-owned workflows with their existing OpenHands identity is the next step. Service accounts require an explicit credential/budget-owner policy. See [the roadmap](docs/ROADMAP.md).
+- Native app-started automations and GitLab resolver launches are admitted in this beta and covered by 119 independently passing regression/integration tests. Automations charge their definition owner; GitLab resolvers use the mapped actor. External services are mocked in these new tests; live background staging checks remain. [Ownership, setup and evidence limits](docs/BACKGROUND-WORKFLOWS.md). Service accounts remain refused.
 - Warm backends and standalone `CloudWorkspace.get_llm` are refused in this mode.
 - Only the OpenAI chat-completions protocol is implemented. Bifrost/Portkey remain unqualified.
 - The shared model picker can show a model that a particular member cannot use; permission is enforced when inference runs.
 - OpenHands conversation usage is useful feedback. Your gateway remains the authority for total spend and budgets, including auxiliary calls.
 - This package adds no sandbox egress firewall, HA or distributed quota system. See [limitations](docs/LIMITATIONS.md).
 
-The original 23 product overlays are unchanged from the live-tested patch. Packaging adds a pinned-base image build, Compose settings and operator tools; there are no SDK or frontend source changes. [Rollback](docs/ROLLBACK.md) preserves data. `HASHES.json` covers the delivered files; no credentials or deployment-specific identifiers are included.
+The background-workflow revision changes launch policy in one of the 23 product overlays, corrects the migration docstring and restores normal Compose event forwarding. Migration upgrade/downgrade behavior is unchanged. Historical live evidence remains separate from the new background tests. Packaging adds a pinned-base image build, Compose settings and operator tools; there are no SDK or frontend source changes. [Rollback](docs/ROLLBACK.md) preserves data. `HASHES.json` covers the delivered files; no credentials or deployment-specific identifiers are included.
 
 For code review, start with [the code map](docs/CODE-MAP.md) and the patch it links. The overlay directory includes complete upstream files to make guarded image builds reproducible; its line count is not the size of the feature change.

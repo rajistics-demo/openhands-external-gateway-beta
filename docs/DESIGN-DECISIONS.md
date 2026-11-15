@@ -1,6 +1,6 @@
 # Design decisions: personal keys through an external gateway
 
-Recorded November 14, 2026. **Status: implemented staging beta; production adoption requires the gates in [ENGINEERING-HANDOFF.md](ENGINEERING-HANDOFF.md).** This record preserves the reasoning behind the delivered design. It is not a claim that every alternative was fully implemented or tested.
+Recorded November 14, 2026; background revision November 15, 2026. **Status: implemented staging beta; production adoption requires the gates in [ENGINEERING-HANDOFF.md](ENGINEERING-HANDOFF.md).** This record preserves the reasoning behind the delivered design. It is not a claim that every alternative was fully implemented or tested.
 
 ## 1. Problem and intended outcome
 
@@ -79,7 +79,7 @@ The [Compose evidence](../compose-evidence.json) records two regular SSO members
 
 The [prior GKE evidence](../EVIDENCE.json) is a separate qualification, not a claim that the entire selected regression suite ran under Compose. Successful DeepSeek/Opus inference, Bifrost/Portkey, production identity providers, load/HA/recovery and production release acceptance remain unqualified.
 
-Human-owned automations and GitLab resolvers should be able to reuse their established native identity, but the delivered code gates these paths until actual launch-path tests pass. Service accounts need an explicit credential and budget owner; they must not silently borrow a person's identity. These are distinct problems.
+The initial preview gated human-owned automations and GitLab resolver launches. The November 15 revision admits their native app-started paths through the same binder, with 119 independently passing tests. Automations retain their definition owner; GitLab resolvers use the mapped actor. External services were substituted in these tests; live background staging acceptance remains. Service accounts stay refused pending an explicit credential and budget owner. See [the exact background scope](BACKGROUND-WORKFLOWS.md).
 
 ## 5. When to revisit these decisions
 

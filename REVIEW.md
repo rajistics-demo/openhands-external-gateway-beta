@@ -1,3 +1,9 @@
+# Background revision review
+
+The November 15 background revision was independently rerun by the coordinator: 119 gateway/automation/GitLab tests passed with zero failures, errors or skips against the reviewed source and exact automation image revision. Successful backend startup, distinct owner tokens and actual dispatcher failure persistence are covered. External services are substituted and SQLite is used for status persistence; no live scheduler/webhook/provider or completion-callback round-trip is claimed. See [the validation record](docs/BACKGROUND-VALIDATION.md).
+
+The Opus review below applies to the earlier interactive pilot baseline. It is not a new review or production approval of the background changes.
+
 # Review and acceptance
 
 The primary review included the pinned source, exact image/file hashes, actual PostgreSQL storage, two native SSO users, real provider inference and browser inspection. A hosted Opus 5.5 review in the same EKS task sandbox examined the current operator script, launcher/configuration and original runtime overlay against the pinned `OrgStore` source.

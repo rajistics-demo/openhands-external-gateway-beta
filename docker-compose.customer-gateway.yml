@@ -15,7 +15,8 @@ x-customer-gateway: &customer-gateway
   # their own LLM key/base_url in Settings would bypass the per-member key import
   # and the relay entirely, so both are disabled while this feature is on.
   OH_ALLOW_USER_LLM_CONFIGURATION: 'false'
-  AUTOMATION_EVENT_FORWARDING_ENABLED: 'false'
+  # Event forwarding inherits the stock Compose setting. Native app-started
+  # automation conversations use the same owner-scoped gateway binder.
 
 services:
   app:

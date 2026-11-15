@@ -29,3 +29,7 @@ The customer creates/manages keys, users, teams, budgets and reporting in their 
 Optional demo tools use administrative operations such as `/user/new` and `/key/generate` to prepare synthetic fixtures. Demo budget/rotation tests also used customer administration. Those are operator/test activities, not application permissions. The optional demo LiteLLM service owns its own master key; app, worker and sandbox do not receive it.
 
 Source: `server/customer_gateway/profile.py` and `relay.py`, represented by `build/overlay/f013.py` and `f014.py`; see the overlay manifest for the complete source map.
+
+## Native automation authentication
+
+Automation 1.32.1 uses its existing OpenHands service authentication to obtain an internal application API key for `automation.user_id` and `automation.org_id`. This is separate from the customer gateway virtual key: the integration still imports customer keys and sends only inference upstream. External event actors are not automatically substituted for the definition owner. See [the ownership matrix](BACKGROUND-WORKFLOWS.md).
