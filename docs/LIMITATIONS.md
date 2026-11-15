@@ -1,5 +1,7 @@
 # Evaluation limits
 
+> Live update: [background results](BACKGROUND-LIVE-RESULTS.md) verify two native automation owners, completion callbacks, a GitHub resolver, exact LiteLLM key attribution and model denial. Historical results below retain their original scope. GitLab live delivery and the recorded webhook reliability concern remain open.
+
 This preview was exercised on a dedicated 16 GB AWS Docker host with two regular SSO members and customer-like LiteLLM 1.103.6. Real Haiku 4.5 and Sonnet 4.5 queries succeeded. Opus was a denial target; successful real Opus or DeepSeek inference was not qualified in this Compose run.
 
 Not qualified: the customer’s production IdP/network/model set; HA, load/soak and disaster recovery; older-binary rollback; Bifrost/Portkey; organization-wide OpenHands billing dashboards. The prior GKE regression evidence is recorded separately.

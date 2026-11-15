@@ -1,0 +1,67 @@
+{
+  "recorded_date": "2026-11-15",
+  "scope": "Isolated Compose staging; synthetic human accounts; customer LiteLLM; actual native entrypoints",
+  "versions": {
+    "enterprise": "1.92.0",
+    "sdk": "1.62.0",
+    "workspace": "1.62.0",
+    "automation": "1.32.1",
+    "customer_litellm": "1.103.6"
+  },
+  "independent_tests": {
+    "tests": 122,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "live_results": {
+    "two_native_prompt_automations": {
+      "distinct_human_definition_owners_same_org": true,
+      "both_completed_via_entrypoint_callback": true,
+      "both_terminal_proof_files_independently_read": true,
+      "all_action_response_ids_joined_to_owner_key_ledger": true,
+      "matched_response_counts": [
+        3,
+        2
+      ],
+      "definitions_disabled": true
+    },
+    "github_issue_resolver": {
+      "real_webhook_and_native_oauth": true,
+      "mapped_native_actor": true,
+      "actual_conversation_finished": true,
+      "native_acknowledgement_and_result_posted": true,
+      "all_action_response_ids_joined_to_actor_key_ledger": true,
+      "matched_response_count": 9,
+      "no_repository_changes_or_pull_request": true
+    },
+    "denied_model_automation": {
+      "terminal_status": "FAILED",
+      "http_status": 403,
+      "relay_code": "model_not_permitted",
+      "shared_key_fallback": false
+    },
+    "credential_checks": {
+      "distinct_personal_keys_in_encrypted_server_store": true,
+      "checked_sandbox_env_has_no_personal_provider_master_or_app_credentials": true
+    },
+    "walkthrough_preserved": true
+  },
+  "configuration_fix": {
+    "scope": "gateway Compose overlay, app and worker",
+    "existing_enterprise_classes": [
+      "integrations.github.github_service.SaaSGitHubService",
+      "integrations.gitlab.gitlab_service.SaaSGitLabService"
+    ],
+    "product_or_sdk_source_change": false
+  },
+  "limits": [
+    "Live GitLab issue/MR delivery and posting have not been tested; GitLab caller is source-tested.",
+    "Cron timing and event-actor identity are not qualified by manually dispatched definition-owner tests.",
+    "Live background budget exhaustion/recovery, long-running token refresh, rotation and outage recovery remain to qualify.",
+    "GitHub labeled delivery returned HTTP 500 despite a finished conversation and posted results; redelivery and deduplication need investigation before production.",
+    "The model picker can show models denied at inference.",
+    "These results do not establish production HA, load, disaster recovery or other-gateway compatibility."
+  ],
+  "evidence_safety": "Sanitized assertions only. Live endpoints, resource IDs, key fingerprints, customer identifiers, and raw logs remain private."
+}

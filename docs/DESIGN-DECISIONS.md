@@ -1,5 +1,7 @@
 # Design decisions: personal keys through an external gateway
 
+> Live update: [background results](BACKGROUND-LIVE-RESULTS.md) verify two native automation owners, completion callbacks, a GitHub resolver, exact LiteLLM key attribution and model denial. Historical results below retain their original scope. GitLab live delivery and the recorded webhook reliability concern remain open.
+
 Recorded November 14, 2026; background revision November 15, 2026. **Status: implemented staging beta; production adoption requires the gates in [ENGINEERING-HANDOFF.md](ENGINEERING-HANDOFF.md).** This record preserves the reasoning behind the delivered design. It is not a claim that every alternative was fully implemented or tested.
 
 ## 1. Problem and intended outcome

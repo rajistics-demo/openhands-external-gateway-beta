@@ -1,5 +1,7 @@
 # Background workflow validation
 
+> Update: [isolated live Compose results](BACKGROUND-LIVE-RESULTS.md) now verify native prompt automations and a GitHub issue resolver. The source-test results below remain historical; live GitLab delivery is still unverified.
+
 ## Source and scope
 
 The November 15, 2026 revision enables native automation and resolver triggers through the existing Enterprise binder. It restores stock Compose event forwarding. It does not change the SDK, frontend, customer key storage, relay protocol or customer gateway permissions. A stale migration docstring was also corrected so the preferred overlay build and two-step source build agree; the migration's executable code is unchanged.

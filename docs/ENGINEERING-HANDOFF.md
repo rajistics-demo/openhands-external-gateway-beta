@@ -1,5 +1,7 @@
 # Engineering handoff: external-gateway beta
 
+> Live update: [background results](BACKGROUND-LIVE-RESULTS.md) verify two native automation owners, completion callbacks, a GitHub resolver, exact LiteLLM key attribution and model denial. Historical results below retain their original scope. GitLab live delivery and the recorded webhook reliability concern remain open.
+
 Recorded November 14, 2026; background revision November 15, 2026. This document is the resume point for an engineer who has not read the original conversation. **The repository contains a working staging evaluation, not an approved production release.** No live deployment access details are included.
 
 ## 1. Start here

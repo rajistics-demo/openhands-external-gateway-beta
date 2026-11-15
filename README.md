@@ -30,6 +30,7 @@ Read [Design decisions](docs/DESIGN-DECISIONS.md) for the alternatives and secur
 
 - [Architecture and exact gateway API permissions](docs/API-PERMISSIONS.md)
 - [Product code map](docs/CODE-MAP.md)
+- [Live background evidence](docs/BACKGROUND-LIVE-RESULTS.md) and [machine-readable results](background-live-validation.json)
 - [Automation and GitLab ownership/setup](docs/BACKGROUND-WORKFLOWS.md), [validation](docs/BACKGROUND-VALIDATION.md) and [machine-readable results](background-validation.json)
 - [Current support and next steps](docs/ROADMAP.md)
 - [Key/security boundaries](docs/TOPOLOGY.md)
@@ -76,7 +77,7 @@ The AWS native Compose evaluation used two regular SSO members, real Haiku and S
 
 ## Boundaries
 
-- Native app-started automations and GitLab resolver launches are admitted in this beta and covered by 119 independently passing regression/integration tests. Automations charge their definition owner; GitLab resolvers use the mapped actor. External services are mocked in these new tests; live background staging checks remain. [Ownership, setup and evidence limits](docs/BACKGROUND-WORKFLOWS.md). Service accounts remain refused.
+- Native app-started automations and GitLab resolver launches are admitted in this beta and covered by 119 independently passing regression/integration tests. Automations charge their definition owner; GitLab resolvers use the mapped actor. The combined suite now has 122 independently passing tests. [Live Compose tests](docs/BACKGROUND-LIVE-RESULTS.md) also verify two native prompt automations, exact per-key LiteLLM spend joins, a GitHub issue resolver and disallowed-model failure. Live GitLab delivery and production reliability checks remain. [Ownership, setup and evidence limits](docs/BACKGROUND-WORKFLOWS.md). Service accounts remain refused.
 - Warm backends and standalone `CloudWorkspace.get_llm` are refused in this mode.
 - Only the OpenAI chat-completions protocol is implemented. Bifrost/Portkey remain unqualified.
 - The shared model picker can show a model that a particular member cannot use; permission is enforced when inference runs.

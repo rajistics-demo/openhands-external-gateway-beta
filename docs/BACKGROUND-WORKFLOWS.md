@@ -1,5 +1,7 @@
 # Automations and GitLab resolver workflows
 
+> Update: [isolated live Compose results](BACKGROUND-LIVE-RESULTS.md) now verify native prompt automations and a GitHub issue resolver. The source-test results below remain historical; live GitLab delivery is still unverified.
+
 The beta admits native app-started automation and resolver conversations to the same server-side credential binder as interactive conversations. Personal customer keys stay encrypted in Enterprise; the sandbox gets a scoped OpenHands inference token. This adds no customer LiteLLM administration permissions and no SDK/frontend source changes.
 
 ## Which person's key is used?
