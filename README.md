@@ -22,6 +22,10 @@ The relay runs inside Enterprise; there is no separate relay application to depl
 
 [Compare the earlier two-gateway design with this relay](docs/ARCHITECTURE.md).
 
+## Resume the work without the original conversation
+
+Read [Design decisions](docs/DESIGN-DECISIONS.md) for the alternatives and security rationale, then [Engineering handoff](docs/ENGINEERING-HANDOFF.md) for the code map, tested baseline and production acceptance stages. Live access and deployment details remain in a separate private operator record.
+
 ## Repository guide
 
 - [Architecture and exact gateway API permissions](docs/API-PERMISSIONS.md)

@@ -7,3 +7,5 @@
 - Keep credentials, real env files, raw logs, API responses, infrastructure identifiers and recordings in an ignored private location outside tracked evidence. Publish sanitized necessary evidence only; inspect exact outgoing history and metadata before pushes.
 - Repository editing does not authorize changes to running demos, customer systems, global model defaults, account permissions or invitations. Preserve the running walkthrough demo.
 - This repository was explicitly authorized for initial private publication. Further external messages, public visibility changes, customer invitations and broader publication require the applicable user authorization. Do not auto-send messages or invoke review bots.
+
+- Before resuming engineering, read `docs/DESIGN-DECISIONS.md` and `docs/ENGINEERING-HANDOFF.md`. Treat recorded evidence as version-specific; live access remains in the owner’s separate private operator record.

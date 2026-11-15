@@ -19,3 +19,5 @@ A service account needs an explicit assigned gateway credential and budget owner
 Production qualification still needs the customer's IdP and network, HA/load/soak, backup/restore with the persistent encryption secret, and older-binary rollback. The package adds no sandbox egress firewall or distributed budget reservation system.
 
 Bifrost and Portkey are future compatibility targets. The gateway profile isolates protocol/header/model mapping, but neither product is claimed supported until real end-to-end tests pass. Only the OpenAI chat-completions protocol is implemented in this snapshot.
+
+For the rationale and reviewable production acceptance stages, see [Design decisions](DESIGN-DECISIONS.md) and [Engineering handoff](ENGINEERING-HANDOFF.md).
