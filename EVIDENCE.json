@@ -1,0 +1,188 @@
+{
+  "status": "controlled Enterprise staging prototype; not a production release",
+  "tested_versions": {
+    "enterprise": "1.92.0",
+    "enterprise_base_commit": "7647eab7b963a5ed0a564215c082dd66331b79a6",
+    "sdk": "1.62.0",
+    "customer_litellm": "1.103.6",
+    "postgres": "16"
+  },
+  "runtime_patch_sha256": "ee331d298bd68282419ad58105a96d8e85c812639978b2ba16d2222130b64eba",
+  "upstream": "Policy/budget matrix used deterministic DeepSeek/Sonnet/Opus routing aliases. A separate live Anthropic Haiku 4.5 route completed native file_editor and terminal actions, with independent marker verification and customer ledger attribution.",
+  "validation": {
+    "postgres_and_surrounding_regressions": {
+      "passed": 1165,
+      "skipped": 1,
+      "failed": 0,
+      "note": "Real repository database fixtures and migrations. PostgreSQL server provisioned outside the test container via a private launcher adapter; no host Docker socket in test containers."
+    },
+    "native_sso": {
+      "regular_members": 2,
+      "same_organization": true,
+      "canonical_subject_mapping_verified": true,
+      "keycloak_backend_environment_names": 0,
+      "external_oidc_fixture_only": true
+    },
+    "native_inference_and_policy": {
+      "both_users_deepseek": true,
+      "susan_sonnet": true,
+      "susan_opus_customer_denial_http": 403,
+      "david_opus": true,
+      "customer_ledger_key_and_user_matches": true,
+      "unauthorized_opus_did_not_reach_provider": true
+    },
+    "sdk_refresh": {
+      "expired_inference_http_401": 2,
+      "native_token_refresh_http_200": 2,
+      "subsequent_successful_inference": true,
+      "test_token_ttl_seconds": 30,
+      "restored_default_ttl_seconds": 900
+    },
+    "key_boundary": {
+      "sandbox_authenticated_exports_tested": 2,
+      "personal_keys_absent": true,
+      "standalone_llm_export_blocked": true,
+      "token_no_store": true,
+      "native_user_org_sandbox_claims_match": true,
+      "after_rotation_and_resume_personal_keys_absent": true
+    },
+    "rotation": {
+      "same_jti": true,
+      "credential_versions": [
+        1,
+        2
+      ],
+      "different_expected_key_fingerprints": true,
+      "stable_native_user_org_sandbox": true,
+      "old_customer_key_retired_by_fixture_operator": true
+    },
+    "budget": {
+      "native_openhands_budget_denied": true,
+      "separate_application_key_same_customer_user_http": 429,
+      "demo_budget_restored": true
+    },
+    "gateway_outage": {
+      "gateway_scaled_to_zero": true,
+      "app_unchanged_while_down": true,
+      "inference_failed_closed": true,
+      "no_provider_fallback": true,
+      "sandboxes_while_down": [
+        {
+          "actor": "susan",
+          "same_sandbox_id": true,
+          "status": "RUNNING"
+        },
+        {
+          "actor": "david",
+          "same_sandbox_id": true,
+          "status": "RUNNING"
+        }
+      ],
+      "gateway_restored": true,
+      "susan_native_recovered": true,
+      "david_native_recovered": true,
+      "app_pod_unchanged": true,
+      "sandboxes_after_recovery": [
+        {
+          "actor": "susan",
+          "same_sandbox_id": true,
+          "status": "RUNNING"
+        },
+        {
+          "actor": "david",
+          "same_sandbox_id": true,
+          "status": "RUNNING"
+        }
+      ]
+    },
+    "credential_revocation": {
+      "existing_native_conversation_denied": true,
+      "recovered_after_explicit_profile_reauthorization": true
+    },
+    "feature_rollback": {
+      "feature_switched_off": true,
+      "gateway_routes_absent_when_off": true,
+      "native_identity_endpoints_work_when_off": true,
+      "encrypted_keys_retained_when_off": true,
+      "feature_restored": true,
+      "encrypted_keys_unchanged_after_restore": true,
+      "susan_same_conversation_recovered": true,
+      "david_same_conversation_recovered": true
+    },
+    "sandbox_pause_resume": {
+      "pause_http": 200,
+      "paused": true,
+      "resume_http": 200,
+      "same_sandbox_running_after_resume": true,
+      "same_conversation_inference_recovered": true
+    },
+    "working_demo_preservation": {
+      "gke_original_objects_checked": 50,
+      "gke_original_specs_unchanged": true,
+      "aws_original_containers_checked": 28,
+      "aws_original_ids_images_states_unchanged": true
+    },
+    "live_auth_boundaries": {
+      "susan_cannot_export_with_other_sandbox_key": true,
+      "david_cannot_export_with_other_sandbox_key": true,
+      "valid_inference_catalog_http": 200,
+      "not_full_user_auth_http": 401,
+      "not_key_admin_auth_http": 401
+    },
+    "real_provider_native_tool_task": {
+      "real_model": "anthropic/claude-haiku-4-5-20251001",
+      "tool_names": [
+        "file_editor",
+        "terminal"
+      ],
+      "tool_action_count": 2,
+      "observation_count": 2,
+      "error_codes": [],
+      "finish_action_seen": false,
+      "native_finished": true,
+      "independent_read_exit_code": 0,
+      "independent_marker_exact": true,
+      "real_model_positive_spend_rows": 3,
+      "all_match_personal_key": true,
+      "all_match_customer_user": true,
+      "real_model_names": [
+        "anthropic/claude-haiku-4-5-20251001"
+      ],
+      "user_budget": 1.0,
+      "user_spend_positive": true,
+      "canonical_sso_identity_preserved": true,
+      "personal_and_provider_keys_absent_from_live_export": true,
+      "provider_master_personal_key_env_names_absent": true,
+      "personal_and_provider_keys_absent_from_tool_event_trace": true,
+      "gateway_configuration_requirement": "LiteLLM drop_params=true was required to filter unsupported OpenAI prompt_cache_key on the Anthropic route. No Enterprise/SDK source change."
+    }
+  },
+  "code_scope": {
+    "product_and_compose_files": 24,
+    "product_and_compose_added_lines": 1779,
+    "product_and_compose_removed_lines": 20,
+    "test_files": 11,
+    "sdk_source_changed": false
+  },
+  "review": {
+    "opus": "Implementation, self-checks and required pre-commit hooks.",
+    "fable": "Independent static reviews of the exact runtime patch and final routing delta; GO for controlled staging, not production sign-off.",
+    "coordinator": "Real PostgreSQL and live GKE native acceptance. Found a full-app route mounting defect, then verified its fix.",
+    "documentation_only_followup": "Separate migration docstring correction; executable AST unchanged. Not part of the deployed runtime overlay."
+  },
+  "not_qualified": [
+    "Customer exact provider/model set; real DeepSeek, Sonnet and Opus were not used in the policy matrix",
+    "Native Docker Compose end-to-end; earlier component Compose tests are separate evidence",
+    "Bifrost or Portkey interoperability",
+    "Customer production IdP, production network policy, HA/load/soak and disaster recovery",
+    "GitLab resolver, automations and service-account launches are intentionally refused while enabled",
+    "Standalone CloudWorkspace.get_llm, warm-pool backend and Responses API are unsupported while enabled",
+    "Older binary rollback is not live-rehearsed; data-preserving migration downgrade/re-upgrade passed PostgreSQL tests"
+  ],
+  "evidence_safety": {
+    "raw_artifacts_excluded": true,
+    "credential_values_excluded": true,
+    "actual_private_identifier_scan_matches": 0,
+    "scanner_hash_match_independently_verified": true
+  }
+}

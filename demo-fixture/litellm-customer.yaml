@@ -1,0 +1,19 @@
+# CUSTOMER LiteLLM config (customer-only; no OpenHands hook/callback).
+model_list:
+  - model_name: deepseek-chat
+    litellm_params: {model: openai/deepseek-chat, api_base: os.environ/PROVIDER_BASE_URL, api_key: provider-stub-no-auth}
+    model_info: {input_cost_per_token: 0.000001, output_cost_per_token: 0.000001}
+  - model_name: claude-sonnet
+    litellm_params: {model: openai/claude-sonnet, api_base: os.environ/PROVIDER_BASE_URL, api_key: provider-stub-no-auth}
+    model_info: {input_cost_per_token: 0.000001, output_cost_per_token: 0.000001}
+  - model_name: claude-opus
+    litellm_params: {model: openai/claude-opus, api_base: os.environ/PROVIDER_BASE_URL, api_key: provider-stub-no-auth}
+    model_info: {input_cost_per_token: 0.000001, output_cost_per_token: 0.000001}
+litellm_settings:
+  num_retries: 0
+  request_timeout: 600
+  drop_params: false
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  disable_spend_logs: false

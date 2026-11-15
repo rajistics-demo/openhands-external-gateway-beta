@@ -1,0 +1,7 @@
+# Deterministic provider stub used ONLY by the optional demo LiteLLM overlay.
+FROM python:3.13-slim
+WORKDIR /app
+RUN pip install --no-cache-dir starlette==0.48.0 uvicorn==0.38.0
+COPY provider_stub.py .
+EXPOSE 9100
+CMD ["uvicorn", "provider_stub:app", "--host", "0.0.0.0", "--port", "9100"]

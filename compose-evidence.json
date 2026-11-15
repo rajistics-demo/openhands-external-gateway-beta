@@ -1,0 +1,192 @@
+{
+  "status": "native Docker Compose customer-evaluation preview; not a supported production release",
+  "verified_at_utc": "2026-11-15T01:52:04.102995+00:00",
+  "versions": {
+    "enterprise": "1.92.0",
+    "sdk": "1.62.0",
+    "customer_litellm": "1.103.6",
+    "canvas": "1.40.0",
+    "postgres_major": 16
+  },
+  "enterprise_base_commit": "7647eab7b963a5ed0a564215c082dd66331b79a6",
+  "runtime_patch_sha256": "ee331d298bd68282419ad58105a96d8e85c812639978b2ba16d2222130b64eba",
+  "native_compose": {
+    "dedicated_linux_host_memory_gb": 16,
+    "customer_launcher_and_security_overlay_deployed": true,
+    "private_deployment_overlay_required": false,
+    "platform_bundled_litellm_proxy": false,
+    "customer_gateway_separate_database": true,
+    "existing_secrets_and_sandbox_container_ids_preserved": true,
+    "runtime_file_hashes_verified": 23,
+    "sdk_source_changes": 0,
+    "frontend_source_changes": 0
+  },
+  "identity_and_inference": {
+    "regular_sso_members_same_org": 2,
+    "native_identity_matches_verified": true,
+    "sso_backend_keycloak_dependency": false,
+    "temporary_external_oidc_fixture_used": true,
+    "real_provider_models_successful": [
+      "anthropic/claude-haiku-4-5-20251001",
+      "anthropic/claude-sonnet-4-5-20250929"
+    ],
+    "both_users_tool_execution_and_independent_marker_checks": [
+      {
+        "actor": "susan",
+        "exact_marker": true
+      },
+      {
+        "actor": "david",
+        "exact_marker": true
+      }
+    ],
+    "fresh_default_launches_without_llm_profile": [
+      {
+        "actor": "susan",
+        "native_default_launch_ready": true,
+        "execution_status": "finished",
+        "assistant_exact_marker": true,
+        "error_codes": []
+      },
+      {
+        "actor": "david",
+        "native_default_launch_ready": true,
+        "execution_status": "finished",
+        "assistant_exact_marker": true,
+        "error_codes": []
+      }
+    ]
+  },
+  "credential_boundaries": {
+    "member_keys_stored_as_ciphertext": true,
+    "runtime_environment_checks": [
+      {
+        "role": "sandbox",
+        "provider_key_absent": true,
+        "customer_master_absent": true,
+        "personal_keys_absent": true,
+        "docker_socket_mounted": false
+      },
+      {
+        "role": "sandbox",
+        "provider_key_absent": true,
+        "customer_master_absent": true,
+        "personal_keys_absent": true,
+        "docker_socket_mounted": false
+      },
+      {
+        "role": "app-or-worker",
+        "provider_key_absent": true,
+        "customer_master_absent": true,
+        "personal_keys_absent": true,
+        "docker_socket_mounted": true
+      },
+      {
+        "role": "app-or-worker",
+        "provider_key_absent": true,
+        "customer_master_absent": true,
+        "personal_keys_absent": true,
+        "docker_socket_mounted": true
+      }
+    ],
+    "customer_admin_key_required_by_app": false,
+    "operator_key_import_transport": "stdin",
+    "rotation": {
+      "same_native_sso_identity": true,
+      "same_customer_budget_owner": true,
+      "old_key_revoked": true,
+      "app_or_sandbox_restart_required": false,
+      "replacement_key_positive_rows": 3
+    }
+  },
+  "policy": {
+    "shared_catalog_can_show_disallowed_model": true,
+    "susan_native_opus_denial": "403 relay model_not_permitted",
+    "susan_customer_key_direct_opus_denial_http": 403,
+    "gateway_only_model_denial_through_native_relay": "not tested; both layers kept restricted",
+    "customer_budget": {
+      "user_budget": 1.0,
+      "temporarily_lowered_for_denial_test": 0.01,
+      "native_error": "ExceededBudget",
+      "restored_and_recovery_verified": true
+    },
+    "no_shared_key_fallback_observed": true
+  },
+  "customer_spend_attribution": {
+    "database_positive_rows": 13,
+    "attribution": [
+      {
+        "actor": "susan",
+        "positive_rows": 8,
+        "replacement_or_current_key_rows": 3,
+        "correct_customer_user": true,
+        "models": [
+          "anthropic/claude-haiku-4-5-20251001",
+          "anthropic/claude-sonnet-4-5-20250929"
+        ]
+      },
+      {
+        "actor": "david",
+        "positive_rows": 5,
+        "replacement_or_current_key_rows": 5,
+        "correct_customer_user": true,
+        "models": [
+          "anthropic/claude-haiku-4-5-20251001"
+        ]
+      }
+    ]
+  },
+  "observed_ui": {
+    "model_picker_and_switch_label": true,
+    "fresh_native_default_profile": "Gateway Haiku",
+    "conversation_usage_panel": {
+      "input_tokens": 123152,
+      "output_tokens": 339,
+      "total_tokens": 123491,
+      "displayed_cost_usd": 0.2075,
+      "scope": "captured multi-step conversation; not an aggregate customer billing total"
+    },
+    "fresh_packaged_conversation_usage": {
+      "total_tokens": 20132,
+      "displayed_cost_usd": 0.0202
+    },
+    "customer_key_user_budget_and_filtered_request_log_views": true,
+    "org_wide_openhands_billing_dashboard": "not qualified",
+    "alias_context_window_label": "window size unknown"
+  },
+  "review": {
+    "primary_review": "source review and live AWS/API/browser acceptance",
+    "opus_5_5": "read-only candidate review against pinned OrgStore source; no pilot release blocker found, contingent on fresh default launch acceptance, subsequently passed",
+    "reviewed_hashes": {
+      "cli/bootstrap_default_profile.py": "6a016cbcc4208e093e609acdb517d01cb486d407ccb9a98ad1f317769bff3d77",
+      "evaluate": "103733cb208d2fe6020c09aa38603927cb3848bfb0f751e85d3ff0008b6e6a25",
+      "docker-compose.customer-gateway.yml": "d0ebe3aecfc3aed046769c952986be8608896b2b9ca31a90f1e02d5a51260147",
+      "docker-compose.security.yml": "a61459fcc3d7324be48216e2b80496d0cfb6b27b7243dd4634a0f3b5655be6b0",
+      "build/manifest/overlay-manifest.json": "00fe7de7fda66e9572813d686289751fc349d25dab4a1f8e8e4b0953fd0813f1"
+    }
+  },
+  "preservation": {
+    "old_aws_demo_containers_unchanged": 28,
+    "existing_idp_client_config_unchanged": true,
+    "no_existing_gke_workload_config_changes": true,
+    "demo_retention": "Keep running with test data intact for the requested walkthrough; no teardown scheduled"
+  },
+  "separate_prior_gke_evidence": "EVIDENCE.json; 1165 passed / 1 skipped selected regressions, not rerun as an entire Compose suite",
+  "unqualified": [
+    "production identity provider",
+    "HA/load/soak/disaster recovery",
+    "older-binary rollback",
+    "Bifrost/Portkey",
+    "customer-only native model-denial path with relay guard relaxed"
+  ],
+  "unsupported_in_gateway_mode": [
+    "automations",
+    "GitLab resolver/service accounts",
+    "warm backends",
+    "standalone CloudWorkspace.get_llm",
+    "Responses API",
+    "ACP agents"
+  ],
+  "distribution": "Owner-authorized private Enterprise beta publication. Upstream license retained; applicable commercial/evaluation terms remain. No prebuilt beta image publication or customer invitations performed.",
+  "support_scope_note": "Background paths remain gated in this tested code. Human-owned automations/resolvers should reuse their established OpenHands identity, subject to separate end-to-end validation and guard changes. Service-account credential policy remains separate."
+}

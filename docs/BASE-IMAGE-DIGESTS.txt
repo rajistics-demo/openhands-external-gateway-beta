@@ -1,0 +1,20 @@
+Verified anonymously against the public GHCR registry API (no credentials) while
+assembling this handoff. ghcr.io/openhands/enterprise-server:1.92.0 resolves to a
+4-entry OCI image index, matching the acceptance note of "4 platform entries":
+
+  linux/amd64  image manifest:       sha256:1fc805d90bbb97fc75583cda9b315bc9748713311c8b672eec6dfbdf9b19b974
+  linux/amd64  attestation manifest: sha256:e6d0dd4ddcee2a3e3abd2c4db0fd88641bfad745449a5fe43a4160524a0d8a4b
+  linux/arm64  image manifest:       sha256:faf8d28424af633657a3b50f90232c173973604e224b242d32d8c21ea2146f2e
+  linux/arm64  attestation manifest: sha256:dded77f1c284d8fd93508b12567abc2a717e6e6c67535435bcc859f25df3ba19
+
+For a reproducible pin on an amd64 node (the common AWS case), set:
+
+  BASE_IMAGE=ghcr.io/openhands/enterprise-server@sha256:1fc805d90bbb97fc75583cda9b315bc9748713311c8b672eec6dfbdf9b19b974
+
+Verify this yourself before trusting it for anything beyond this evaluation; re-check
+closer to deployment time in case the tag moves:
+
+  TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:openhands/enterprise-server:pull" | python3 -c "import json,sys;print(json.load(sys.stdin)['token'])")
+  curl -s -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+    "https://ghcr.io/v2/openhands/enterprise-server/manifests/1.92.0"

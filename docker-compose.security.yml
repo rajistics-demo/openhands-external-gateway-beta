@@ -1,0 +1,81 @@
+# Optional, additive security-hardening overlay for this evaluation package.
+#
+# docker-compose.yml itself is left byte-for-byte as copied from the pinned Enterprise
+# checkout (per README.md) — it is NOT edited here. This file only adds/overrides
+# environment entries on top of it via Compose's normal multi-file merge, to close
+# three gaps that are real in the base compose defaults for an unmodified `docker
+# compose up`:
+#
+#   1. ENABLE_POSTHOG_ANALYTICS defaults to true with a baked-in public PostHog key
+#      (docker-compose.yml lines defining ENABLE_POSTHOG_ANALYTICS/POSTHOG_CLIENT_KEY).
+#      An evaluation release should not phone home by default.
+#   2. DB_PASS / POSTGRES_PASSWORD defaults to the literal string "openhands" if unset.
+#   3. AUTOMATION_WEBHOOK_SECRET / AUTOMATION_KV_SECRET default to fixed, publicly
+#      documented literal strings ("local-compose-webhook-secret" / "...-kv-secret") if
+#      unset.
+#   4. JWT_SECRET is not wired into docker-compose.yml's environment at all, so the app
+#      falls back to a key auto-generated at first boot and persisted to the shared
+#      app-filestore volume (openhands/app_server/utils/encryption_key.py). That's
+#      workable for a single stack, but gives no operator-controlled, rotatable,
+#      backed-up secret for the data this key encrypts at rest — set one explicitly.
+#   5. PERMITTED_CORS_ORIGINS (app/worker) and AUTOMATION_CORS_ORIGINS
+#      (automation-server) default to http://localhost:${APP_PORT}, and
+#      canvas-server's --lock-to-cloud command arg defaults the same way. None of
+#      these match a real customer-facing HTTPS WEB_URL — set all three to it.
+#   6. AUTOMATIONS_SERVICE_KEY (app/worker) and AUTOMATION_SERVICE_KEY
+#      (automation-server) default to the same fixed, publicly documented literal
+#      string ("local-compose-service-key") if unset — set one real value for all
+#      three from AUTOMATION_SERVICE_KEY.
+#
+# Use: add `-f docker-compose.security.yml` and `--env-file .env.security` to every
+# `docker compose` invocation in docs/SETUP.md. Every variable below is REQUIRED
+# (no insecure default) — compose fails fast with a clear error if any is unset.
+
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASS:?Set DB_PASS in .env.security to a real secret, not the "openhands" default}
+
+  app:
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.security — do not rely on the auto-generated/file-persisted fallback for a value you may need to rotate or back up}
+      ENABLE_POSTHOG_ANALYTICS: 'false'
+      POSTHOG_CLIENT_KEY: ''
+      DB_PASS: ${DB_PASS:?Set DB_PASS in .env.security to a real secret, not the "openhands" default}
+      PERMITTED_CORS_ORIGINS: ${WEB_URL:?Set WEB_URL in .env to the real customer-facing HTTPS origin}
+      AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:?Set AUTOMATION_SERVICE_KEY in .env.security — must match automation-server's AUTOMATION_SERVICE_KEY exactly}
+
+  worker:
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env.security — must match the app service exactly}
+      ENABLE_POSTHOG_ANALYTICS: 'false'
+      POSTHOG_CLIENT_KEY: ''
+      DB_PASS: ${DB_PASS:?Set DB_PASS in .env.security to a real secret, not the "openhands" default}
+      PERMITTED_CORS_ORIGINS: ${WEB_URL:?Set WEB_URL in .env to the real customer-facing HTTPS origin}
+      AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:?Set AUTOMATION_SERVICE_KEY in .env.security — must match automation-server's AUTOMATION_SERVICE_KEY exactly}
+
+  automation-server:
+    environment:
+      AUTOMATION_DB_PASS: ${DB_PASS:?Set DB_PASS in .env.security to a real secret, not the "openhands" default}
+      AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:?Set AUTOMATION_WEBHOOK_SECRET in .env.security, not the documented literal default}
+      AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:?Set AUTOMATION_KV_SECRET in .env.security, not the documented literal default}
+      AUTOMATION_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:?Set AUTOMATION_SERVICE_KEY in .env.security — must match app/worker's AUTOMATIONS_SERVICE_KEY exactly}
+      AUTOMATION_CORS_ORIGINS: ${WEB_URL:?Set WEB_URL in .env to the real customer-facing HTTPS origin}
+      AUTOMATION_POSTHOG_API_KEY: ''
+
+  # command is a full-replace field in Compose overrides (not merged element-by-element),
+  # so the entire base docker-compose.yml command list is reproduced here with only the
+  # --lock-to-cloud value changed, from the localhost default to the real WEB_URL.
+  canvas-server:
+    command:
+      - --port
+      - '8000'
+      - --host
+      - 0.0.0.0
+      - --dir
+      - /opt/agent-canvas/frontend
+      - --base-path
+      - /canvas
+      - --lock-to-cloud
+      - ${WEB_URL:?Set WEB_URL in .env to the real customer-facing HTTPS origin}
+      - --disable-telemetry

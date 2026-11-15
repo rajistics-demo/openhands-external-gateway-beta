@@ -1,0 +1,34 @@
+# Real, filled-in env files (copied from the committed .example templates).
+.env
+.env.customer-gateway
+.env.security
+.env.demo-litellm
+!*.example
+
+# Generated locally by ./evaluate — real secrets, 0600, never committed.
+.env.generated-secrets
+
+# Anything an operator marks private/local scratch space under this tree.
+private/
+*.local
+*.log
+logs/
+
+# Python bytecode / build caches.
+__pycache__/
+*.pyc
+build/.build/
+build/.cache/
+
+# Additional credential and infrastructure scratch files.
+.env*
+!*.example
+.private/
+.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+*.tfstate*
+*.kubeconfig
+.DS_Store

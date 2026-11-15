@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1.7
+#
+# Preferred build path: start from the OFFICIAL, PUBLIC, PINNED enterprise-server
+# image (no credentials needed — ghcr.io/openhands/enterprise-server is a public
+# package; its 1.92.0 tag resolves to a 4-entry OCI index: linux/amd64 + attestation,
+# linux/arm64 + attestation) and copy in only the 23 reviewed overlay files. The
+# frontend is unchanged by this patch, so this path does not rebuild it.
+#
+# This is hash-guarded exactly like build/Dockerfile.sourceprep (base hashes before
+# copy, overlay hashes after), it just skips cloning+patching+rebuilding the whole
+# source tree. Use build/Dockerfile.sourceprep instead if you need a full
+# from-source build (e.g. auditing beyond file-level hashes, or the official image
+# is not reachable from your network).
+#
+# Usage (see build.sh): docker build -f build/Dockerfile.customer-gateway \
+#   -t <tag> --build-arg BASE_IMAGE=ghcr.io/openhands/enterprise-server@sha256:<digest> \
+#   build/
+
+ARG BASE_IMAGE=ghcr.io/openhands/enterprise-server@sha256:1fc805d90bbb97fc75583cda9b315bc9748713311c8b672eec6dfbdf9b19b974
+FROM ${BASE_IMAGE}
+
+USER root
+
+COPY manifest/overlay-manifest.json /guard/overlay-manifest.json
+COPY overlay /guard/overlay
+COPY install_overlay.py /guard/install_overlay.py
+
+RUN python3 /guard/install_overlay.py \
+      /guard/overlay-manifest.json /guard/overlay /app \
+    && rm -rf /guard
+# install_overlay.py itself re-owns only the paths it created/wrote (matching the
+# official image's own openhands:openhands/770 convention) instead of a second
+# `chown -R`/`chmod -R` pass over the whole already-correctly-owned /app tree — that
+# full-tree pass measured ~231s on a reviewed build for ~23 touched files.
+
+USER openhands

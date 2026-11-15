@@ -1,0 +1,4642 @@
+diff --git a/docker-compose.customer-gateway.yml b/docker-compose.customer-gateway.yml
+new file mode 100644
+index 0000000..0e02015
+--- /dev/null
++++ b/docker-compose.customer-gateway.yml
+@@ -0,0 +1,18 @@
++# Opt-in customer inference gateway (prototype). Layer on the base file only when wanted:
++#   docker compose -f docker-compose.yml -f docker-compose.customer-gateway.yml up -d
++# The customer's gateway (e.g. their LiteLLM) is external; this file runs no gateway, holds
++# no gateway master/admin key, and runs no init/discovery/budget job against it. Per-member
++# virtual keys are imported with: docker compose exec app python -m server.customer_gateway.cli
++x-customer-gateway: &customer-gateway
++  CUSTOMER_GATEWAY_ENABLED: 'true'
++  # Must be reachable from sandbox containers (the same host they use for webhooks).
++  CUSTOMER_GATEWAY_RELAY_URL: ${CUSTOMER_GATEWAY_RELAY_URL:?Set CUSTOMER_GATEWAY_RELAY_URL in .env}
++  CUSTOMER_GATEWAY_TOKEN_URL: ${CUSTOMER_GATEWAY_TOKEN_URL:?Set CUSTOMER_GATEWAY_TOKEN_URL in .env}
++  CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS: ${CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS:-900}
++  CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY: ${CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY:-false}
++
++services:
++  app:
++    environment: *customer-gateway
++  worker:
++    environment: *customer-gateway
+diff --git a/migrations/versions/216_add_customer_gateway_tables.py b/migrations/versions/216_add_customer_gateway_tables.py
+new file mode 100644
+index 0000000..2444409
+--- /dev/null
++++ b/migrations/versions/216_add_customer_gateway_tables.py
+@@ -0,0 +1,78 @@
++"""Add opt-in customer gateway org config and per-member encrypted credentials.
++
++Additive only. Rollback is a feature-flag switch, not this downgrade: the
++downgrade drops customer key ciphertext and is for disposable test databases.
++
++Revision ID: 216
++Revises: 215
++Create Date: 2026-11-14
++"""
++
++from typing import Sequence
++
++import sqlalchemy as sa
++from alembic import op
++
++revision: str = '216'
++down_revision: str | None = '215'
++branch_labels: str | Sequence[str] | None = None
++depends_on: str | Sequence[str] | None = None
++
++
++def upgrade() -> None:
++    # Idempotent: downgrade retains the tables (and encrypted member keys), so a
++    # re-upgrade after a rollback finds them in place.
++    existing = set(sa.inspect(op.get_bind()).get_table_names())
++    if 'customer_gateway_org_config' in existing:
++        return
++    op.create_table(
++        'customer_gateway_org_config',
++        sa.Column(
++            'org_id',
++            sa.Uuid(),
++            sa.ForeignKey('org.id', ondelete='CASCADE'),
++            primary_key=True,
++        ),
++        sa.Column('gateway_id', sa.String(), nullable=False),
++        sa.Column('enabled', sa.Boolean(), nullable=False, server_default=sa.false()),
++        sa.Column('profile', sa.JSON(), nullable=False),
++        sa.Column('updated_by', sa.String(), nullable=False),
++        sa.Column(
++            'updated_at',
++            sa.DateTime(timezone=True),
++            nullable=False,
++            server_default=sa.func.now(),
++        ),
++        sa.Column('enabled_since', sa.DateTime(timezone=True), nullable=True),
++    )
++    op.create_table(
++        'customer_gateway_member_credential',
++        sa.Column('org_id', sa.Uuid(), primary_key=True),
++        sa.Column('user_id', sa.Uuid(), primary_key=True),
++        sa.Column('ciphertext', sa.String(), nullable=False),
++        sa.Column('fingerprint', sa.String(16), nullable=False),
++        sa.Column(
++            'credential_version', sa.Integer(), nullable=False, server_default='1'
++        ),
++        sa.Column('policy_version', sa.Integer(), nullable=False, server_default='1'),
++        sa.Column('allowed_models', sa.JSON(), nullable=False),
++        sa.Column('enabled', sa.Boolean(), nullable=False, server_default=sa.true()),
++        sa.Column('updated_by', sa.String(), nullable=False),
++        sa.Column(
++            'updated_at',
++            sa.DateTime(timezone=True),
++            nullable=False,
++            server_default=sa.func.now(),
++        ),
++        sa.ForeignKeyConstraint(
++            ['org_id', 'user_id'],
++            ['org_member.org_id', 'org_member.user_id'],
++            ondelete='CASCADE',
++        ),
++    )
++
++
++def downgrade() -> None:
++    # Non-destructive: rollback is switch-off only. The tables and encrypted member keys
++    # are retained; older code never reads them. Drop them manually only on purpose.
++    pass
+diff --git a/openhands/app_server/app_conversation/app_conversation_router.py b/openhands/app_server/app_conversation/app_conversation_router.py
+index ce3dac8..6f5c8bc 100644
+--- a/openhands/app_server/app_conversation/app_conversation_router.py
++++ b/openhands/app_server/app_conversation/app_conversation_router.py
+@@ -105,6 +105,7 @@ from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
+ from openhands.app_server.user.user_context import UserContext
+ from openhands.app_server.user_auth import get_secrets_store, get_user_settings
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.dependencies import get_dependencies
+ from openhands.app_server.utils.docker_utils import (
+     sandbox_url_for_app_server,
+@@ -892,6 +893,18 @@ async def switch_conversation_profile(
+             detail='Sandbox is paused; resume it before switching profiles.',
+         )
+ 
++    try:
++        profile_llm = await customer_gateway_hooks.bind_profile_llm(
++            profile_llm, ctx.sandbox
++        )
++    except Exception as exc:
++        if not customer_gateway_hooks.is_gateway_error(exc):
++            raise
++        raise HTTPException(
++            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++            detail='Profile is not available through the customer gateway',
++        ) from exc
++
+     llm_payload = profile_llm.model_dump(
+         mode='json',
+         exclude_none=True,
+diff --git a/openhands/app_server/app_conversation/live_status_app_conversation_service.py b/openhands/app_server/app_conversation/live_status_app_conversation_service.py
+index a43abf7..9dbc835 100644
+--- a/openhands/app_server/app_conversation/live_status_app_conversation_service.py
++++ b/openhands/app_server/app_conversation/live_status_app_conversation_service.py
+@@ -167,6 +167,7 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
+ from openhands.app_server.user.user_context import UserContext
+ from openhands.app_server.user.user_models import UserInfo
+ from openhands.app_server.user_auth.user_auth import AuthType
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.docker_utils import (
+     sandbox_url_for_app_server,
+ )
+@@ -1051,9 +1052,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
+                 )
+             )
+ 
++            start_conversation_request = (
++                await customer_gateway_hooks.bind_start_request(
++                    start_conversation_request,
++                    sandbox,
++                    request.trigger.value if request.trigger else None,
++                )
++            )
++
+             # Build before seeding, which can refresh the captured user's LLM key.
+             # Profiles must still be available before the conversation is created.
+-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
++            await self._seed_sandbox_profiles(
++                agent_server_url, sandbox.session_api_key, sandbox=sandbox
++            )
+ 
+             await self._activate_codex_credential_binding(
+                 request, user, sandbox, agent_server_url, conversation_id
+@@ -1281,8 +1292,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
+     async def _start_title_llm(
+         self, user: UserInfo, request: AppConversationStartRequest
+     ) -> LLM | None:
++        from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
+         from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+ 
++        # The startup title runs in the app server, outside any sandbox an inference
++        # token could be bound to; customer-gateway orgs use the first-message title.
++        if (
++            customer_gateway_hooks.deployment_switch_on()
++            and await customer_gateway_hooks.gateway_enabled_for_org(
++                await get_credential_org_id(self.user_context)
++            )
++        ):
++            return None
++
+         try:
+             agent_llm = (
+                 self._configure_llm(user, request.llm_model)
+@@ -1928,7 +1950,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
+         )
+ 
+     async def _seed_sandbox_profiles(
+-        self, agent_server_url: str, session_api_key: str | None
++        self,
++        agent_server_url: str,
++        session_api_key: str | None,
++        sandbox: SandboxInfo | None = None,
+     ) -> None:
+         """Mirror the user's saved LLM profiles into the sandbox profile store.
+ 
+@@ -1979,6 +2004,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
+                     connections=connections,
+                 )
+                 resolved = detach_provider_connection(resolved)
++                if sandbox is not None:
++                    resolved = await customer_gateway_hooks.bind_profile_llm(
++                        resolved, sandbox
++                    )
+                 response = await self.httpx_client.post(
+                     f'{base_url}/{name}',
+                     json={
+diff --git a/openhands/app_server/sandbox/docker_sandbox_service.py b/openhands/app_server/sandbox/docker_sandbox_service.py
+index e8a541d..f615a1b 100644
+--- a/openhands/app_server/sandbox/docker_sandbox_service.py
++++ b/openhands/app_server/sandbox/docker_sandbox_service.py
+@@ -58,6 +58,7 @@ from openhands.app_server.sandbox.sandbox_store import (
+     search_stored_sandboxes,
+ )
+ from openhands.app_server.services.injector import InjectorState
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
+ 
+ _logger = logging.getLogger(__name__)
+@@ -501,6 +502,9 @@ class DockerSandboxService(ManagedSandboxService):
+ 
+         if LITE_LLM_API_URL:
+             env_vars[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE] = LITE_LLM_API_URL
++        env_vars = await customer_gateway_hooks.sandbox_environment(
++            credential_org_id, env_vars
++        )
+ 
+         # Set CORS origins for remote browser access when web_url is configured.
+         # This allows the agent-server container to accept requests from the
+diff --git a/openhands/app_server/sandbox/managed_sandbox_service.py b/openhands/app_server/sandbox/managed_sandbox_service.py
+index a6c5422..c81811a 100644
+--- a/openhands/app_server/sandbox/managed_sandbox_service.py
++++ b/openhands/app_server/sandbox/managed_sandbox_service.py
+@@ -36,6 +36,7 @@ from openhands.app_server.sandbox.sandbox_store import (
+     mark_running,
+ )
+ from openhands.app_server.user.user_context import UserContext
++from openhands.app_server.utils import customer_gateway_hooks
+ 
+ _logger = logging.getLogger(__name__)
+ 
+@@ -132,6 +133,9 @@ class ManagedSandboxService(SandboxService, ABC):
+         stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
+         if stored_sandbox is None:
+             return False
++        await customer_gateway_hooks.assert_resume_allowed(
++            stored_sandbox.credential_org_id, stored_sandbox.created_at
++        )
+         outcome = await self._resume_at_provider(stored_sandbox)
+         if outcome == ProviderOutcome.FAILED:
+             return False
+diff --git a/openhands/app_server/sandbox/remote_sandbox_service.py b/openhands/app_server/sandbox/remote_sandbox_service.py
+index 454fa49..03be96b 100644
+--- a/openhands/app_server/sandbox/remote_sandbox_service.py
++++ b/openhands/app_server/sandbox/remote_sandbox_service.py
+@@ -76,6 +76,7 @@ from openhands.app_server.settings.settings_models import (
+ )
+ from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
+ from openhands.app_server.user.user_context import UserContext
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.docker_utils import (
+     replace_localhost_hostname_for_docker,
+ )
+@@ -606,6 +607,9 @@ class RemoteSandboxService(SandboxService):
+ 
+             # Prepare environment variables
+             environment = await self._init_environment(sandbox_spec, sandbox_id)
++            environment = await customer_gateway_hooks.sandbox_environment(
++                credential_org_id, environment
++            )
+             if extra_env:
+                 environment.update(extra_env)
+ 
+@@ -808,6 +812,9 @@ class RemoteSandboxService(SandboxService):
+         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+         if not stored_sandbox:
+             return False
++        await customer_gateway_hooks.assert_resume_allowed(
++            stored_sandbox.credential_org_id, stored_sandbox.created_at
++        )
+ 
+         runtime_data = await self._get_runtime_for_resume(sandbox_id)
+         if runtime_data is None:
+diff --git a/openhands/app_server/services/jwt_service.py b/openhands/app_server/services/jwt_service.py
+index 4326254..56a43d0 100644
+--- a/openhands/app_server/services/jwt_service.py
++++ b/openhands/app_server/services/jwt_service.py
+@@ -49,6 +49,7 @@ class JwtAudience(StrEnum):
+     QUOTA_VERIFICATION = 'openhands:quota-verification'
+     SIGNUP_LINK = 'openhands:signup-link'
+     SLACK_OAUTH_STATE = 'openhands:slack-oauth-state'
++    INFERENCE = 'openhands:inference'
+ 
+ 
+ class JwtService:
+diff --git a/openhands/app_server/user/user_router.py b/openhands/app_server/user/user_router.py
+index 5585583..0f00ace 100644
+--- a/openhands/app_server/user/user_router.py
++++ b/openhands/app_server/user/user_router.py
+@@ -8,6 +8,7 @@ from openhands.app_server.integrations.service_types import UserGitInfo
+ from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
+ from openhands.app_server.user.user_context import UserContext
+ from openhands.app_server.user.user_models import UserInfo
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.dependencies import get_dependencies
+ 
+ # We use the get_dependencies method here to signal to the OpenAPI docs that this endpoint
+@@ -35,9 +36,11 @@ async def get_current_user(
+         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
+     if expose_secrets:
+         await validate_session_key_ownership(user_context, x_session_api_key)
+-        return JSONResponse(  # type: ignore[return-value]
+-            content=user.model_dump(mode='json', context={'expose_secrets': True})
++        content = user.model_dump(mode='json', context={'expose_secrets': True})
++        content = await customer_gateway_hooks.sanitize_sandbox_user_export(
++            content, x_session_api_key
+         )
++        return JSONResponse(content=content)  # type: ignore[return-value]
+     return user
+ 
+ 
+diff --git a/openhands/app_server/utils/customer_gateway_hooks.py b/openhands/app_server/utils/customer_gateway_hooks.py
+new file mode 100644
+index 0000000..83bfdd2
+--- /dev/null
++++ b/openhands/app_server/utils/customer_gateway_hooks.py
+@@ -0,0 +1,100 @@
++"""Thin core-side hooks into the SaaS-only opt-in customer gateway.
++
++``server.customer_gateway`` is not importable in OSS builds; then every hook is the
++identity. In SaaS builds each hook is still the identity unless the deployment switch
++is on and the sandbox's credential org has an enabled gateway."""
++
++from typing import Any, TypeVar
++from uuid import UUID
++
++T = TypeVar('T')
++
++_UNSET: Any = object()
++_service_module: Any = _UNSET
++
++
++def _svc() -> Any:
++    """Imported lazily: the service imports app_server config, which imports callers of this module."""
++    global _service_module
++    if _service_module is _UNSET:
++        try:
++            from server.customer_gateway import service as loaded
++        except ImportError:  # OSS build
++            loaded = None  # type: ignore[assignment]
++        _service_module = loaded
++    return _service_module
++
++
++async def bind_start_request(request: T, sandbox: Any, trigger: str | None = None) -> T:
++    svc = _svc()
++    return (
++        request
++        if svc is None
++        else await svc.bind_start_request(request, sandbox, trigger)
++    )
++
++
++async def bind_profile_llm(llm: T, sandbox: Any) -> T:
++    svc = _svc()
++    return llm if svc is None else await svc.bind_profile_llm(llm, sandbox)
++
++
++async def sandbox_environment(
++    credential_org_id: UUID | None, environment: dict[str, str]
++) -> dict[str, str]:
++    svc = _svc()
++    if svc is None:
++        return environment
++    return await svc.sandbox_env_overrides(credential_org_id, environment)
++
++
++def deployment_switch_on() -> bool:
++    """Cheap, no I/O: lets callers skip org lookups entirely when the switch is off."""
++    svc = _svc()
++    return svc is not None and svc.get_settings() is not None
++
++
++async def gateway_enabled_for_org(credential_org_id: UUID | None) -> bool:
++    svc = _svc()
++    if svc is None or credential_org_id is None or svc.get_settings() is None:
++        return False
++    return (
++        await svc.CustomerGatewayStore.get_enabled_org_gateway(credential_org_id)
++        is not None
++    )
++
++
++def is_gateway_error(exc: BaseException) -> bool:
++    svc = _svc()
++    return svc is not None and isinstance(
++        exc, (svc.CustomerGatewayLaunchError, svc.CustomerGatewayDenied)
++    )
++
++
++async def assert_resume_allowed(
++    credential_org_id: UUID | None, created_at: Any
++) -> None:
++    """Raises a user-facing 409 (not a 500) for a sandbox that predates the gateway."""
++    svc = _svc()
++    if svc is None:
++        return
++    try:
++        await svc.assert_resume_allowed(credential_org_id, created_at)
++    except svc.CustomerGatewayLaunchError as exc:
++        from fastapi import HTTPException, status
++
++        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
++
++
++async def sanitize_sandbox_user_export(
++    payload: dict[str, Any], session_api_key: str | None
++) -> dict[str, Any]:
++    """Call after the route has validated the session key and its ownership. When the
++    deployment switch is off this returns before any sandbox or database lookup."""
++    svc = _svc()
++    if svc is None or svc.get_settings() is None:
++        return payload
++    from openhands.app_server.sandbox.session_auth import validate_session_key
++
++    sandbox = await validate_session_key(session_api_key)
++    return await svc.sanitize_sandbox_user_export(payload, sandbox)
+diff --git a/saas_server.py b/saas_server.py
+index cb4da33..9d1fd99 100644
+--- a/saas_server.py
++++ b/saas_server.py
+@@ -36,6 +36,9 @@ from server.constants import (  # noqa: E402
+     PERMITTED_CORS_ORIGINS,
+     USER_PROVISIONING_ENABLED,
+ )
++from server.customer_gateway.config import (  # noqa: E402
++    get_settings as customer_gateway_settings,
++)
+ from server.logger import logger  # noqa: E402
+ from server.middleware import (  # noqa: E402
+     ApiKeyAwareCORSMiddleware,
+@@ -136,6 +139,12 @@ def is_saas():
+ 
+ 
+ base_app.include_router(readiness_router)  # Add routes for readiness checks
++if customer_gateway_settings() is not None:
++    from server.customer_gateway.routes import (
++        build_router as build_customer_gateway_router,
++    )
++
++    base_app.include_router(build_customer_gateway_router())
+ base_app.include_router(api_router)  # Add additional route for github auth
+ base_app.include_router(oauth_router)  # Add additional route for oauth callback
+ base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
+diff --git a/server/customer_gateway/__init__.py b/server/customer_gateway/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/server/customer_gateway/cli.py b/server/customer_gateway/cli.py
+new file mode 100644
+index 0000000..8b7dbee
+--- /dev/null
++++ b/server/customer_gateway/cli.py
+@@ -0,0 +1,79 @@
++"""Operator-only administration (run inside the app image with its DB/encryption config).
++
++No HTTP route exists for key writes: sandbox-held session keys and full-user API keys
++can therefore never manage customer mappings. Keys are read from stdin, never argv.
++
++  python -m server.customer_gateway.cli set-org --org ORG --gateway-id ID --profile-file F [--disable]
++  python -m server.customer_gateway.cli set-key --org ORG --user USER --models a,b  < key
++  python -m server.customer_gateway.cli disable|enable --org ORG --user USER
++  python -m server.customer_gateway.cli status --org ORG
++"""
++
++import argparse
++import asyncio
++import getpass
++import json
++import os
++import sys
++from uuid import UUID
++
++from server.customer_gateway.config import env_flag
++from server.customer_gateway.profile import parse_profile
++from storage.customer_gateway_store import CustomerGatewayStore
++
++
++def _actor() -> str:
++    return 'operator-cli:' + os.environ.get(
++        'CUSTOMER_GATEWAY_OPERATOR', getpass.getuser()
++    )
++
++
++async def main(argv: list[str]) -> int:
++    ap = argparse.ArgumentParser(prog='customer_gateway')
++    sub = ap.add_subparsers(dest='cmd', required=True)
++    o = sub.add_parser('set-org')
++    o.add_argument('--org', type=UUID, required=True)
++    o.add_argument('--gateway-id', required=True)
++    o.add_argument('--profile-file', required=True)
++    o.add_argument('--disable', action='store_true')
++    k = sub.add_parser('set-key')
++    k.add_argument('--org', type=UUID, required=True)
++    k.add_argument('--user', type=UUID, required=True)
++    k.add_argument('--models', required=True)
++    for name in ('disable', 'enable'):
++        d = sub.add_parser(name)
++        d.add_argument('--org', type=UUID, required=True)
++        d.add_argument('--user', type=UUID, required=True)
++    st = sub.add_parser('status')
++    st.add_argument('--org', type=UUID, required=True)
++    a = ap.parse_args(argv)
++    if a.cmd == 'set-org':
++        with open(a.profile_file) as f:
++            raw = json.load(f)
++        parse_profile(
++            raw,
++            allow_http=env_flag('CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY'),
++        )
++        await CustomerGatewayStore.set_org_gateway(
++            a.org, a.gateway_id, raw, not a.disable, _actor()
++        )
++        print(json.dumps({'org': str(a.org), 'enabled': not a.disable}))
++    elif a.cmd == 'set-key':
++        key = sys.stdin.readline().strip()
++        models = [m for m in a.models.split(',') if m]
++        v = await CustomerGatewayStore.set_member_credential(
++            a.org, a.user, key, models, _actor()
++        )
++        print(json.dumps({'user': str(a.user), 'credential_version': v}))
++    elif a.cmd in ('disable', 'enable'):
++        v = await CustomerGatewayStore.set_member_enabled(
++            a.org, a.user, a.cmd == 'enable', _actor()
++        )
++        print(json.dumps({'user': str(a.user), 'policy_version': v}))
++    else:
++        print(json.dumps(await CustomerGatewayStore.masked_status(a.org), default=str))
++    return 0
++
++
++if __name__ == '__main__':
++    sys.exit(asyncio.run(main(sys.argv[1:])))
+diff --git a/server/customer_gateway/config.py b/server/customer_gateway/config.py
+new file mode 100644
+index 0000000..e14c0ef
+--- /dev/null
++++ b/server/customer_gateway/config.py
+@@ -0,0 +1,31 @@
++"""Deployment switch for the opt-in customer gateway. OFF unless CUSTOMER_GATEWAY_ENABLED=true;
++when OFF nothing is mounted and launch/sandbox hooks return before any DB access."""
++
++import os
++from dataclasses import dataclass
++from datetime import timedelta
++
++
++@dataclass(frozen=True)
++class CustomerGatewaySettings:
++    relay_url: str  # base_url sandboxes use for LLM calls (ends with /v1)
++    token_url: str  # sandbox-authenticated inference-token refresh URL
++    token_ttl: timedelta
++    allow_http: bool  # isolated test networks only
++
++
++def env_flag(name: str) -> bool:
++    return os.environ.get(name, '').strip().lower() in ('1', 'true')
++
++
++def get_settings() -> CustomerGatewaySettings | None:
++    if not env_flag('CUSTOMER_GATEWAY_ENABLED'):
++        return None
++    return CustomerGatewaySettings(
++        relay_url=os.environ['CUSTOMER_GATEWAY_RELAY_URL'].rstrip('/'),
++        token_url=os.environ['CUSTOMER_GATEWAY_TOKEN_URL'],
++        token_ttl=timedelta(
++            seconds=int(os.environ.get('CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS', '900'))
++        ),
++        allow_http=env_flag('CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY'),
++    )
+diff --git a/server/customer_gateway/profile.py b/server/customer_gateway/profile.py
+new file mode 100644
+index 0000000..0d7f065
+--- /dev/null
++++ b/server/customer_gateway/profile.py
+@@ -0,0 +1,66 @@
++"""Gateway-neutral upstream profile: one fixed origin, credential placement, catalog, capabilities.
++
++Only the OpenAI chat-completions protocol is implemented. A gateway product (LiteLLM today) is
++described by profile values, not code. Other products are not claimed as supported.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from urllib.parse import urlsplit
++
++PROTOCOLS = frozenset({'openai_chat_completions'})
++CAPABILITIES = frozenset({'stream', 'tools'})
++_FORBIDDEN_HEADERS = frozenset(
++    {'host', 'content-length', 'content-type', 'transfer-encoding', 'cookie'}
++)
++
++
++class ProfileError(ValueError):
++    pass
++
++
++@dataclass(frozen=True)
++class GatewayProfile:
++    base_url: str
++    models: dict[str, str]  # catalog alias -> upstream model name
++    protocol: str = 'openai_chat_completions'
++    credential_header: str = 'authorization'  # 'authorization' => "Bearer <key>"; else raw key in that header
++    capabilities: frozenset[str] = CAPABILITIES
++
++    def credential_headers(self, key: str) -> dict[str, str]:
++        if self.credential_header == 'authorization':
++            return {'Authorization': f'Bearer {key}'}
++        return {self.credential_header: key}
++
++    def chat_completions_url(self) -> str:
++        return self.base_url.rstrip('/') + '/chat/completions'
++
++
++def parse_profile(raw: dict, *, allow_http: bool = False) -> GatewayProfile:
++    """Validate admin-supplied profile. allow_http is for isolated test networks only."""
++    url = urlsplit(str(raw.get('base_url', '')))
++    if url.scheme != 'https' and not (allow_http and url.scheme == 'http'):
++        raise ProfileError('base_url must be https')
++    if not url.hostname or url.username or url.password or url.query or url.fragment:
++        raise ProfileError('base_url must be a plain origin+path')
++    protocol = raw.get('protocol', 'openai_chat_completions')
++    if protocol not in PROTOCOLS:
++        raise ProfileError(f'unsupported protocol {protocol!r}')
++    header = str(raw.get('credential_header', 'authorization')).lower()
++    if header in _FORBIDDEN_HEADERS or not header.replace('-', '').isalnum():
++        raise ProfileError('invalid credential_header')
++    caps = frozenset(raw.get('capabilities', sorted(CAPABILITIES)))
++    if not caps <= CAPABILITIES:
++        raise ProfileError(f'unknown capabilities {sorted(caps - CAPABILITIES)}')
++    models = raw.get('models')
++    if (
++        not isinstance(models, dict)
++        or not models
++        or not all(
++            isinstance(k, str) and isinstance(v, str) and k and v
++            for k, v in models.items()
++        )
++    ):
++        raise ProfileError('models must be a non-empty alias->model map')
++    return GatewayProfile(url.geturl(), dict(models), protocol, header, caps)
+diff --git a/server/customer_gateway/relay.py b/server/customer_gateway/relay.py
+new file mode 100644
+index 0000000..e680a91
+--- /dev/null
++++ b/server/customer_gateway/relay.py
+@@ -0,0 +1,340 @@
++"""Fixed-destination inference relay (Starlette routes, HTTPX upstream).
++
++Only POST /v1/chat/completions and GET /v1/models. Upstream URL and
++Authorization are built server-side from admin config and the member mapping;
++no client header is forwarded. No redirects, no retries, streaming passthrough.
++Relay-side denials are 4xx (never 5xx) so the SDK does not retry them.
++"""
++
++from __future__ import annotations
++
++import json
++import logging
++import uuid
++from dataclasses import dataclass
++from typing import Any, Awaitable, Callable
++
++import anyio
++import httpx
++from starlette.requests import Request
++from starlette.responses import JSONResponse, Response, StreamingResponse
++from starlette.routing import Route
++
++from server.customer_gateway.profile import GatewayProfile
++from server.customer_gateway.tokens import InvalidInferenceToken
++from storage.customer_gateway_store import CustomerGatewayDenied as Denied
++
++logger = logging.getLogger('customer_gateway.relay')
++CLOSE_TIMEOUT_S = 5
++ERROR_BODY_LIMIT = 64 * 1024
++
++ALLOWED_BODY_KEYS = frozenset(
++    {
++        'model',
++        'messages',
++        'stream',
++        'stream_options',
++        'temperature',
++        'top_p',
++        'max_tokens',
++        'max_completion_tokens',
++        'stop',
++        'tools',
++        'tool_choice',
++        'prompt_cache_key',
++        'parallel_tool_calls',
++        'response_format',
++        'seed',
++        'presence_penalty',
++        'frequency_penalty',
++        'reasoning_effort',
++        'logprobs',
++        'top_logprobs',
++        'n',
++    }
++)
++PASSBACK_HEADERS = ('content-type', 'content-encoding', 'retry-after')
++
++
++Authorizer = Callable[[Request], Awaitable[tuple[Any, GatewayProfile, Any]]]
++
++
++@dataclass
++class RelayConfig:
++    max_body_bytes: int = 4 * 1024 * 1024
++    connect_timeout: float = 10.0
++    read_timeout: float = 600.0
++    max_inflight: int = 64  # per-process cap on concurrent upstream requests
++    max_inflight_per_user: int = (
++        8  # per-process, per member: one member cannot hold all
++    )
++
++
++MISSING_TOKEN_MESSAGE = (
++    'Customer gateway: no OpenHands inference token. LLMs must come from the '
++    'conversation start request; standalone SDK use (e.g. CloudWorkspace.get_llm) '
++    'is unsupported for this organization.'
++)
++
++
++def _deny(status: int, code: str) -> JSONResponse:
++    return JSONResponse(
++        {'error': {'type': 'relay_denied', 'code': code}}, status_code=status
++    )
++
++
++class InferenceRelay:
++    def __init__(
++        self,
++        config: RelayConfig,
++        authorize: Authorizer,
++        client: httpx.AsyncClient | None = None,
++    ):
++        self.config = config
++        self._authorize = authorize
++        self.client = client or httpx.AsyncClient(
++            follow_redirects=False,
++            timeout=httpx.Timeout(config.read_timeout, connect=config.connect_timeout),
++            transport=httpx.AsyncHTTPTransport(retries=0),
++            trust_env=False,
++        )
++        self._inflight = 0
++        self._user_inflight: dict[str, int] = {}
++
++    def _acquire(self, user_id: str) -> Callable[[], None] | None:
++        held = self._user_inflight.get(user_id, 0)
++        if (
++            self._inflight >= self.config.max_inflight
++            or held >= self.config.max_inflight_per_user
++        ):
++            return None
++        self._inflight += 1
++        self._user_inflight[user_id] = held + 1
++        released = False
++
++        def release() -> None:
++            nonlocal released
++            if released:
++                return
++            released = True
++            self._inflight -= 1
++            left = self._user_inflight[user_id] - 1
++            if left:
++                self._user_inflight[user_id] = left
++            else:
++                del self._user_inflight[user_id]
++
++        return release
++
++    def routes(self) -> list[Route]:
++        return [
++            Route('/v1/chat/completions', self.chat_completions, methods=['POST']),
++            Route('/v1/models', self.models, methods=['GET']),
++        ]
++
++    async def models(self, request: Request) -> Response:
++        try:
++            _, gateway, res = await self._authorize(request)
++        except InvalidInferenceToken:
++            return _deny(401, 'invalid_token')
++        except Denied as d:
++            return _deny(403, d.reason)
++        ids = sorted(m for m in gateway.models if m in res.allowed_models)
++        return JSONResponse(
++            {'object': 'list', 'data': [{'id': m, 'object': 'model'} for m in ids]}
++        )
++
++    async def chat_completions(self, request: Request) -> Response:
++        rid = uuid.uuid4().hex
++        try:
++            principal, gateway, res = await self._authorize(request)
++        except InvalidInferenceToken as exc:
++            if str(exc) == 'missing bearer':
++                return JSONResponse(
++                    {
++                        'error': {
++                            'type': 'relay_denied',
++                            'code': 'missing_inference_token',
++                            'message': MISSING_TOKEN_MESSAGE,
++                        }
++                    },
++                    status_code=401,
++                )
++            logger.info('relay_deny', extra={'rid': rid, 'reason': 'invalid_token'})
++            return _deny(401, 'invalid_token')
++        except Denied as d:
++            logger.info('relay_deny', extra={'rid': rid, 'reason': d.reason})
++            return _deny(403, d.reason)
++
++        if request.query_params:
++            return _deny(400, 'query_not_supported')
++        cl = request.headers.get('content-length')
++        if cl is not None and not cl.isdigit():
++            return _deny(400, 'invalid_content_length')
++        if cl and int(cl) > self.config.max_body_bytes:
++            return _deny(413, 'body_too_large')
++        raw = bytearray()
++        async for chunk in request.stream():
++            raw += chunk
++            if len(raw) > self.config.max_body_bytes:
++                return _deny(413, 'body_too_large')
++        try:
++            body = json.loads(raw)
++        except ValueError:
++            return _deny(400, 'invalid_json')
++        if not isinstance(body, dict):
++            return _deny(400, 'invalid_json')
++        extra = sorted(set(body) - ALLOWED_BODY_KEYS)
++        if extra:
++            return JSONResponse(
++                {
++                    'error': {
++                        'type': 'relay_denied',
++                        'code': 'forbidden_body_fields',
++                        'fields': extra,
++                    }
++                },
++                status_code=400,
++            )
++        alias = body.get('model')
++        if not isinstance(alias, str):
++            return _deny(400, 'invalid_model')
++        if alias not in gateway.models:
++            return _deny(403, 'model_not_in_catalog')
++        if alias not in res.allowed_models:
++            return _deny(403, 'model_not_permitted')
++        if body.get('stream') and 'stream' not in gateway.capabilities:
++            return _deny(400, 'capability_stream_unsupported')
++        if (
++            'tools' in body or 'tool_choice' in body
++        ) and 'tools' not in gateway.capabilities:
++            return _deny(400, 'capability_tools_unsupported')
++        body['model'] = gateway.models[alias]
++
++        upstream = self.client.build_request(
++            'POST',
++            gateway.chat_completions_url(),
++            content=json.dumps(body).encode(),
++            headers={
++                **gateway.credential_headers(res.upstream_key),
++                'Content-Type': 'application/json',
++                'Accept': 'text/event-stream'
++                if body.get('stream')
++                else 'application/json',
++                'Accept-Encoding': 'identity',
++                'X-OpenHands-Request-Id': rid,
++            },
++        )
++        audit = {
++            'rid': rid,
++            'user': principal.user_id,
++            'org': principal.org_id,
++            'sid': principal.session_id,
++            'jti': principal.jti,
++            'model': alias,
++            'key_fp': res.fingerprint,
++            'key_ver': res.credential_version,
++        }
++        release = self._acquire(principal.user_id)
++        if release is None:
++            return JSONResponse(
++                {'error': {'type': 'relay_denied', 'code': 'relay_capacity'}},
++                status_code=429,
++                headers={'retry-after': '1'},
++            )
++        try:
++            resp = await self.client.send(upstream, stream=True)
++        except BaseException as exc:
++            release()
++            if not isinstance(exc, httpx.HTTPError):
++                raise
++            logger.warning(
++                'relay_upstream_error', extra={**audit, 'error': type(exc).__name__}
++            )
++            return _deny(
++                504 if isinstance(exc, httpx.TimeoutException) else 502,
++                'upstream_unreachable',
++            )
++        logger.info('relay_forward', extra={**audit, 'status': resp.status_code})
++        if resp.is_redirect:
++            await _close(resp)
++            release()
++            return _deny(424, 'upstream_redirect_refused')
++        if resp.status_code == 401:
++            # Relay 401 is reserved for inference-token problems: the SDK refreshes on 401,
++            # and a rejected customer key must not trigger a pointless token refresh.
++            await _close(resp)
++            release()
++            return _deny(424, 'customer_gateway_key_rejected')
++        if not resp.is_success:
++            try:
++                return await _guarded_error(resp, res.upstream_key, rid)
++            finally:
++                release()
++        headers = {h: resp.headers[h] for h in PASSBACK_HEADERS if h in resp.headers}
++        headers['x-openhands-request-id'] = rid
++        return OwnedStreamingResponse(
++            resp, status_code=resp.status_code, headers=headers, on_close=release
++        )
++
++
++async def _close(resp: httpx.Response) -> None:
++    with anyio.CancelScope(shield=True), anyio.move_on_after(CLOSE_TIMEOUT_S):
++        await resp.aclose()
++
++
++class OwnedStreamingResponse(StreamingResponse):
++    """Owns the upstream response: closed even if the body iterator never starts or is cancelled."""
++
++    def __init__(self, upstream: httpx.Response, on_close=None, **kwargs):
++        self.upstream = upstream
++        self.on_close = on_close
++        super().__init__(upstream.aiter_raw(), **kwargs)
++
++    async def __call__(self, scope, receive, send):
++        try:
++            await super().__call__(scope, receive, send)
++        finally:
++            await _close(self.upstream)
++            if self.on_close:
++                self.on_close()
++
++
++async def _guarded_error(resp: httpx.Response, key: str, rid: str) -> Response:
++    """Preserve bounded errors while removing exact key material; successful output is trusted."""
++    body = bytearray()
++    oversized = False
++    try:
++        async for chunk in resp.aiter_bytes(chunk_size=4096):
++            if len(body) + len(chunk) > ERROR_BODY_LIMIT:
++                oversized = True
++                break
++            body.extend(chunk)
++    finally:
++        await _close(resp)
++    headers = {
++        h: resp.headers[h] for h in ('content-type', 'retry-after') if h in resp.headers
++    }
++    headers['x-openhands-request-id'] = rid
++    if oversized:
++        headers.pop('content-type', None)
++        return JSONResponse(
++            {
++                'error': {
++                    'type': 'upstream_error',
++                    'message': 'Customer gateway error exceeded the relay size limit',
++                }
++            },
++            status_code=resp.status_code,
++            headers=headers,
++        )
++    # Normalize valid JSON before exact matching so JSON-escaped ASCII keys cannot bypass redaction.
++    try:
++        normalized = json.dumps(json.loads(body)).encode()
++    except (ValueError, RecursionError):
++        normalized = bytes(body)
++    return Response(
++        normalized.replace(key.encode(), b'[redacted]'),
++        status_code=resp.status_code,
++        headers=headers,
++    )
+diff --git a/server/customer_gateway/routes.py b/server/customer_gateway/routes.py
+new file mode 100644
+index 0000000..ae2c7bc
+--- /dev/null
++++ b/server/customer_gateway/routes.py
+@@ -0,0 +1,63 @@
++"""Routes mounted only when CUSTOMER_GATEWAY_ENABLED=true (see saas_server.py).
++
++- /api/customer-gateway/v1/{chat/completions,models}: relay; accepts only inference tokens.
++- /api/customer-gateway/token: sandbox-authenticated (X-Session-API-Key) re-mint for the
++  agent-server refresh-on-401 hook. Returns an inference token, never a customer key.
++There is deliberately no HTTP route that writes or reads customer keys (operator CLI only)."""
++
++from fastapi import APIRouter, HTTPException, Request, status
++from fastapi.responses import PlainTextResponse
++
++from openhands.app_server.sandbox.session_auth import validate_session_key
++from server.customer_gateway.relay import InferenceRelay, RelayConfig
++from server.customer_gateway.service import (
++    authorize_inference,
++    mint_for_sandbox,
++    org_gateway_for_sandbox,
++)
++from storage.customer_gateway_store import CustomerGatewayDenied
++
++# Per-sandbox bearer selected by a custom header: no shared cache may store or reuse it.
++NO_STORE = {
++    'Cache-Control': 'no-store, private',
++    'Pragma': 'no-cache',
++    'Vary': 'X-Session-API-Key',
++}
++
++
++def build_router() -> APIRouter:
++    router = APIRouter(prefix='/api/customer-gateway', include_in_schema=False)
++    relay = InferenceRelay(RelayConfig(), authorize_inference)
++    for route in relay.routes():
++        # Starlette add_route ignores APIRouter.prefix, so the full path is spelled out.
++        router.add_route(
++            router.prefix + route.path,
++            route.endpoint,
++            methods=list(route.methods or []),
++        )
++
++    @router.get('/token', response_class=PlainTextResponse)
++    async def current_inference_token(request: Request) -> PlainTextResponse:
++        try:
++            sandbox = await validate_session_key(
++                request.headers.get('X-Session-API-Key')
++            )
++            gw = await org_gateway_for_sandbox(sandbox)
++            if gw is None:
++                raise HTTPException(
++                    status.HTTP_404_NOT_FOUND,
++                    detail='No customer gateway for this sandbox',
++                )
++            try:
++                token = await mint_for_sandbox(sandbox, gw)
++            except CustomerGatewayDenied as exc:
++                raise HTTPException(
++                    status.HTTP_403_FORBIDDEN, detail=exc.reason
++                ) from exc
++        except HTTPException as exc:
++            raise HTTPException(
++                exc.status_code, detail=exc.detail, headers=NO_STORE
++            ) from exc
++        return PlainTextResponse(token, headers=NO_STORE)
++
++    return router
+diff --git a/server/customer_gateway/service.py b/server/customer_gateway/service.py
+new file mode 100644
+index 0000000..43b7179
+--- /dev/null
++++ b/server/customer_gateway/service.py
+@@ -0,0 +1,424 @@
++"""Native seams for the opt-in customer gateway: relay authorization, sandbox-bound token
++minting, launch-time LLM binding and sandbox refresh environment.
++
++Every entry point returns immediately when the deployment switch is OFF, and is a no-op
++for orgs without an enabled gateway, so managed and BYOK launches are unchanged."""
++
++from __future__ import annotations
++
++import json
++from typing import Any
++from uuid import UUID
++
++from fastapi import HTTPException, status
++from pydantic import SecretStr
++from starlette.requests import Request
++
++from openhands.app_server.config import get_global_config, get_sandbox_service
++from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
++from openhands.app_server.services.injector import InjectorState
++from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
++from openhands.sdk import LLM, Agent
++from server.customer_gateway.config import CustomerGatewaySettings, get_settings
++from server.customer_gateway.profile import GatewayProfile, parse_profile
++from server.customer_gateway.tokens import (
++    InferencePrincipal,
++    InvalidInferenceToken,
++    mint_inference_token,
++    verify_inference_token,
++)
++from storage.customer_gateway_store import (
++    CustomerGatewayDenied,
++    CustomerGatewayStore,
++    MemberResolution,
++    OrgGateway,
++)
++
++REFRESH_URL_ENV = 'OH_LLM_API_KEY_REFRESH_URL'
++REFRESH_HEADERS_ENV = 'OH_LLM_API_KEY_REFRESH_HEADERS'
++REFRESH_BASE_URLS_ENV = 'OH_LLM_API_KEY_REFRESH_BASE_URLS'
++
++
++class CustomerGatewayLaunchError(Exception):
++    """Launch refused while the org's customer gateway is ON (fail closed, no fallback)."""
++
++
++def _jwt():
++    injector = get_global_config().jwt
++    assert injector is not None
++    return injector.get_jwt_service()
++
++
++def _profile(gw: OrgGateway, settings: CustomerGatewaySettings) -> GatewayProfile:
++    return parse_profile(gw.profile, allow_http=settings.allow_http)
++
++
++async def get_sandbox(sandbox_id: str) -> SandboxInfo | None:
++    state = InjectorState()
++    setattr(
++        state, USER_CONTEXT_ATTR, ADMIN
++    )  # same pattern as session_auth.validate_session_key
++    async with get_sandbox_service(state) as sandbox_service:
++        return await sandbox_service.get_sandbox(sandbox_id)
++
++
++async def org_gateway_for_sandbox(sandbox: SandboxInfo) -> OrgGateway | None:
++    if get_settings() is None or sandbox.credential_org_id is None:
++        return None
++    return await CustomerGatewayStore.get_enabled_org_gateway(sandbox.credential_org_id)
++
++
++async def mint_for_sandbox(sandbox: SandboxInfo, gw: OrgGateway) -> str:
++    """Owner/org come only from the persisted sandbox record, never from the caller."""
++    settings = get_settings()
++    assert settings is not None
++    if (
++        sandbox.status != SandboxStatus.RUNNING
++        and sandbox.status != SandboxStatus.STARTING
++    ):
++        raise CustomerGatewayDenied('sandbox_inactive')
++    if not sandbox.created_by_user_id:
++        raise CustomerGatewayDenied('sandbox_unowned')
++    user_id = UUID(sandbox.created_by_user_id)
++    pv = await CustomerGatewayStore.current_policy_version(gw.org_id, user_id)
++    return mint_inference_token(
++        _jwt(),
++        user_id=str(user_id),
++        org_id=str(gw.org_id),
++        sandbox_id=sandbox.id,
++        gateway_id=gw.gateway_id,
++        policy_version=pv,
++        ttl=settings.token_ttl,
++    )
++
++
++async def authorize_inference(
++    request: Request,
++) -> tuple[InferencePrincipal, GatewayProfile, MemberResolution]:
++    settings = get_settings()
++    if settings is None:
++        raise CustomerGatewayDenied('relay_disabled')
++    auth = request.headers.get('authorization', '')
++    token = auth[7:].strip() if auth.lower().startswith('bearer ') else ''
++    if token in ('', UNSUPPORTED_EXPORT_PLACEHOLDER):
++        raise InvalidInferenceToken('missing bearer')
++    p = verify_inference_token(_jwt(), token)
++    try:
++        org_id, user_id = UUID(p.org_id), UUID(p.user_id)
++    except ValueError as exc:
++        raise InvalidInferenceToken('claim format') from exc
++    gw = await CustomerGatewayStore.get_enabled_org_gateway(org_id)
++    if gw is None or gw.gateway_id != p.gateway_id:
++        raise CustomerGatewayDenied('gateway_disabled')
++    sandbox = await get_sandbox(p.session_id)
++    if (
++        sandbox is None
++        or sandbox.status != SandboxStatus.RUNNING
++        or sandbox.created_by_user_id != p.user_id
++        or sandbox.credential_org_id != org_id
++    ):
++        raise CustomerGatewayDenied('session_inactive')
++    res = await CustomerGatewayStore.resolve(org_id, user_id, p.policy_version)
++    return p, _profile(gw, settings), res
++
++
++def catalog_alias(profile: GatewayProfile, model: str) -> str | None:
++    if model in profile.models:
++        return model
++    tail = model.split('/', 1)[-1]
++    return tail if tail in profile.models else None
++
++
++def bind_llm(llm: LLM, profile: GatewayProfile, relay_url: str, token: str) -> LLM:
++    # The relay serves Chat Completions only; Responses-mode LLMs are refused, not re-routed.
++    if llm.api_mode == 'responses':
++        raise CustomerGatewayLaunchError(
++            'Responses API LLMs are not supported through the customer gateway'
++        )
++    alias = catalog_alias(profile, llm.model)
++    if alias is None:
++        raise CustomerGatewayLaunchError(
++            f'model {llm.model!r} is not in the customer gateway catalog'
++        )
++    return llm.model_copy(
++        update={
++            'model': f'openai/{alias}',
++            'base_url': relay_url,
++            'api_key': SecretStr(token),
++            'litellm_extra_body': {},
++            # No SDK retries: a retried 429/5xx/timeout can be billed again at the customer.
++            'num_retries': 0,
++            'api_mode': 'chat',
++            'provider_connection_id': None,
++        }
++    )
++
++
++# Launch sources whose sandbox owner is the human acting. Everything else (automation,
++# resolver, chat/issue integrations, microagent management) is refused while ON.
++INTERACTIVE_TRIGGERS = frozenset({None, 'gui', 'suggested_task', 'openhands_api'})
++
++
++def _assert_supported_runtime() -> None:
++    """Only backends whose start path applies sandbox_env_overrides; a warm-pool claim
++    (k8s agent sandbox) would keep the managed refresh env, so it is refused."""
++    from openhands.app_server.sandbox.docker_sandbox_service import (
++        DockerSandboxServiceInjector,
++    )
++    from openhands.app_server.sandbox.remote_sandbox_service import (
++        RemoteSandboxServiceInjector,
++    )
++
++    injector = get_global_config().sandbox
++    if not isinstance(
++        injector, (RemoteSandboxServiceInjector, DockerSandboxServiceInjector)
++    ):
++        raise CustomerGatewayLaunchError(
++            f'sandbox backend {type(injector).__name__} is not supported with the customer gateway'
++        )
++
++
++def _iter_llm_dicts(node: Any):
++    if isinstance(node, dict):
++        if 'model' in node and 'usage_id' in node:
++            yield node
++        for v in node.values():
++            yield from _iter_llm_dicts(v)
++    elif isinstance(node, list):
++        for v in node:
++            yield from _iter_llm_dicts(v)
++
++
++def assert_all_llms_bound(obj: Any, relay_url: str) -> int:
++    """Invariant over the serialized payload, not an enumeration of known fields."""
++    dumped = obj.model_dump(mode='json', context={'expose_secrets': True})
++    count = 0
++    for llm in _iter_llm_dicts(dumped):
++        if llm.get('base_url') != relay_url or not llm.get('api_key'):
++            raise CustomerGatewayLaunchError(
++                f'unbound LLM {llm.get("usage_id")!r} would bypass the customer gateway'
++            )
++        try:
++            verify_inference_token(_jwt(), llm['api_key'])
++        except InvalidInferenceToken as exc:
++            raise CustomerGatewayLaunchError(
++                'LLM carries a non-inference credential'
++            ) from exc
++        count += 1
++    return count
++
++
++async def bind_start_request(
++    request: Any, sandbox: SandboxInfo, trigger: str | None = None
++) -> Any:
++    """Rebind every LLM carried by a StartConversationRequest, or refuse the launch."""
++    gw = await org_gateway_for_sandbox(sandbox)
++    if gw is None:
++        return request
++    settings = get_settings()
++    assert settings is not None
++    if trigger not in INTERACTIVE_TRIGGERS:
++        raise CustomerGatewayLaunchError(
++            f'{trigger} launches are not supported while the customer gateway is on'
++        )
++    _assert_supported_runtime()
++    _assert_born_after_enable(gw, sandbox.created_at)
++    agent = request.agent
++    if not isinstance(agent, Agent):
++        raise CustomerGatewayLaunchError(
++            'only OpenHands agents can run while the customer gateway is on'
++        )
++    try:
++        token = await mint_for_sandbox(sandbox, gw)
++    except CustomerGatewayDenied as exc:
++        raise CustomerGatewayLaunchError(
++            f'customer gateway access denied: {exc.reason}'
++        ) from exc
++    profile = _profile(gw, settings)
++    updates: dict[str, Any] = {
++        'llm': bind_llm(agent.llm, profile, settings.relay_url, token)
++    }
++    condenser = getattr(agent, 'condenser', None)
++    if condenser is not None and getattr(condenser, 'llm', None) is not None:
++        updates['condenser'] = condenser.model_copy(
++            update={'llm': bind_llm(condenser.llm, profile, settings.relay_url, token)}
++        )
++    definitions = []
++    for d in getattr(request, 'agent_definitions', None) or []:
++        # A definition model names a profile; only the default (seeded, bound) store is allowed.
++        if d.model and d.model != 'inherit' and d.profile_store_dir is not None:
++            raise CustomerGatewayLaunchError(
++                f'agent definition {d.name!r} uses a custom profile store'
++            )
++        if d.condenser is not None and getattr(d.condenser, 'llm', None) is not None:
++            d = d.model_copy(
++                update={
++                    'condenser': d.condenser.model_copy(
++                        update={
++                            'llm': bind_llm(
++                                d.condenser.llm, profile, settings.relay_url, token
++                            )
++                        }
++                    )
++                }
++            )
++        definitions.append(d)
++    request = request.model_copy(update={'agent': agent.model_copy(update=updates)})
++    if definitions:
++        request = request.model_copy(update={'agent_definitions': definitions})
++    if assert_all_llms_bound(request, settings.relay_url) == 0:
++        raise CustomerGatewayLaunchError('no LLM found to bind')
++    return request
++
++
++async def bind_profile_llm(llm: LLM, sandbox: SandboxInfo) -> LLM:
++    """For profiles seeded into the sandbox (model switching, title, sub-agents)."""
++    gw = await org_gateway_for_sandbox(sandbox)
++    if gw is None:
++        return llm
++    settings = get_settings()
++    assert settings is not None
++    _assert_supported_runtime()
++    _assert_born_after_enable(gw, sandbox.created_at)
++    token = await mint_for_sandbox(sandbox, gw)
++    bound = bind_llm(llm, _profile(gw, settings), settings.relay_url, token)
++    assert_all_llms_bound(bound, settings.relay_url)
++    return bound
++
++
++def withhold_llm_keys(payload: Any) -> int:
++    """Null api_key on every LLM-shaped object in a JSON export (in place)."""
++    count = 0
++    for llm in _iter_llm_dicts(payload):
++        if llm.get('api_key') is not None:
++            llm['api_key'] = None
++            count += 1
++    return count
++
++
++# Not a credential: lets a standalone SDK client reach the relay (litellm refuses to send
++# a request without some api_key) so it receives the explicit missing-token error.
++UNSUPPORTED_EXPORT_PLACEHOLDER = 'customer-gateway-no-standalone-llm'
++UNSUPPORTED_EXPORT_DETAIL = (
++    'This organization routes inference through its customer gateway. LLM settings '
++    'exported to a sandbox carry no credential; standalone SDK use such as '
++    'CloudWorkspace.get_llm() is unsupported. Use the LLM bound to the conversation.'
++)
++
++
++EXPORT_MODEL = 'openai/customer-gateway-unsupported'
++
++
++def _iter_exported_llm_dicts(node: Any):
++    # Wider than _iter_llm_dicts: saved profiles need not carry usage_id.
++    if isinstance(node, dict):
++        if 'model' in node and ({'api_key', 'base_url', 'usage_id'} & node.keys()):
++            yield node
++        for v in list(node.values()):
++            yield from _iter_exported_llm_dicts(v)
++    elif isinstance(node, list):
++        for v in node:
++            yield from _iter_exported_llm_dicts(v)
++
++
++def _org_uuid(value: Any) -> UUID | None:
++    if value in (None, ''):
++        return None
++    return value if isinstance(value, UUID) else UUID(str(value))
++
++
++async def sanitize_sandbox_user_export(
++    payload: dict[str, Any], sandbox: SandboxInfo
++) -> dict[str, Any]:
++    """Sandbox-facing user export (``/api/v1/users/me?expose_secrets=true``) while ON.
++
++    No stored LLM key, base URL or provider choice leaves the app server. Every LLM-shaped
++    object and the flat SDK compatibility fields are replaced by one Chat Completions LLM
++    pointing at the relay with a non-secret placeholder bearer, so a standalone SDK client
++    (``CloudWorkspace.get_llm``) gets the relay's explicit ``missing_inference_token``
++    error and cannot reach the old provider. MCP config and other fields are unchanged.
++
++    The export is scoped by both the payload org and the sandbox credential org. If either
++    has an enabled gateway they must be the same org: a sandbox from another (e.g. OFF) org
++    of the same user cannot be used to read an ON org's user info, and vice versa.
++    """
++    settings = get_settings()
++    if settings is None:
++        return payload
++    sandbox_org = sandbox.credential_org_id
++    payload_org = _org_uuid(payload.get('org_id'))
++    orgs = {o for o in (sandbox_org, payload_org) if o is not None}
++    enabled = [o for o in orgs if await CustomerGatewayStore.get_enabled_org_gateway(o)]
++    if not enabled:
++        return payload
++    if payload_org is not None and payload_org != sandbox_org:
++        raise HTTPException(
++            status.HTTP_409_CONFLICT,
++            detail='Customer gateway: this sandbox belongs to a different organization '
++            'than the current one; secrets are not exported across organizations.',
++        )
++    for llm in list(_iter_exported_llm_dicts(payload)):
++        usage_id = llm.get('usage_id')
++        llm.clear()
++        llm.update(
++            model=EXPORT_MODEL,
++            base_url=settings.relay_url,
++            api_key=UNSUPPORTED_EXPORT_PLACEHOLDER,
++            api_mode='chat',
++        )
++        if usage_id is not None:
++            llm['usage_id'] = usage_id
++    for key, value in (
++        ('llm_model', EXPORT_MODEL),
++        ('llm_base_url', settings.relay_url),
++        ('llm_api_key', UNSUPPORTED_EXPORT_PLACEHOLDER),
++    ):
++        if key in payload:
++            payload[key] = value
++    payload['customer_gateway'] = {
++        'llm_export': 'unsupported',
++        'detail': UNSUPPORTED_EXPORT_DETAIL,
++    }
++    return payload
++
++
++def _assert_born_after_enable(gw: OrgGateway, created_at: Any) -> None:
++    """A sandbox created before the org's gateway was switched on carries the managed
++    refresh env and possibly persisted platform credentials: never start, bind or resume
++    a conversation in it while ON. Operators stop the org's running sandboxes on enabling."""
++    if gw.enabled_since is None or created_at is None or created_at <= gw.enabled_since:
++        raise CustomerGatewayLaunchError(
++            'this sandbox predates the customer gateway; start a new conversation'
++        )
++
++
++async def assert_resume_allowed(
++    credential_org_id: UUID | None, created_at: Any
++) -> None:
++    if get_settings() is None or credential_org_id is None:
++        return
++    gw = await CustomerGatewayStore.get_enabled_org_gateway(credential_org_id)
++    if gw is not None:
++        _assert_born_after_enable(gw, created_at)
++
++
++async def sandbox_env_overrides(
++    credential_org_id: UUID | None, environment: dict[str, str]
++) -> dict[str, str]:
++    """Point the stock agent-server refresh-on-401 hook at the inference-token endpoint,
++    scoped to the relay base URL only. Managed/BYOK sandboxes keep their env byte-identical."""
++    settings = get_settings()
++    if settings is None or credential_org_id is None:
++        return environment
++    if await CustomerGatewayStore.get_enabled_org_gateway(credential_org_id) is None:
++        return environment
++    headers = environment.get(REFRESH_HEADERS_ENV)
++    if not headers or 'X-Session-API-Key' not in json.loads(headers):
++        raise CustomerGatewayLaunchError(
++            'sandbox runtime has no session-key refresh header'
++        )
++    return {
++        **environment,
++        REFRESH_URL_ENV: settings.token_url,
++        REFRESH_BASE_URLS_ENV: settings.relay_url,
++    }
+diff --git a/server/customer_gateway/tokens.py b/server/customer_gateway/tokens.py
+new file mode 100644
+index 0000000..f2b8586
+--- /dev/null
++++ b/server/customer_gateway/tokens.py
+@@ -0,0 +1,83 @@
++"""Inference-only bearer on the existing JwtService (audience openhands:inference).
++
++Bound to one sandbox of one member in one org. Never accepted by any other route,
++and other audiences (session/API keys, other JWS) are never accepted here."""
++
++from __future__ import annotations
++
++import uuid
++from dataclasses import dataclass
++from datetime import timedelta
++
++from openhands.app_server.services.jwt_service import JwtAudience, JwtService
++
++ISSUER = 'openhands-enterprise:customer-gateway'
++SCOPE = 'inference'
++MAX_TTL = timedelta(hours=1)
++
++
++class InvalidInferenceToken(Exception):
++    pass
++
++
++@dataclass(frozen=True)
++class InferencePrincipal:
++    user_id: str
++    org_id: str
++    session_id: str  # sandbox id
++    gateway_id: str
++    policy_version: int
++    jti: str
++
++
++def mint_inference_token(
++    jwt_service: JwtService,
++    *,
++    user_id: str,
++    org_id: str,
++    sandbox_id: str,
++    gateway_id: str,
++    policy_version: int,
++    ttl: timedelta,
++) -> str:
++    if not timedelta(0) < ttl <= MAX_TTL:
++        raise ValueError('inference token ttl out of range')
++    payload = {
++        'iss': ISSUER,
++        'sub': str(user_id),
++        'org': str(org_id),
++        'sid': str(sandbox_id),
++        'gw': str(gateway_id),
++        'jti': uuid.uuid4().hex,
++        'scope': SCOPE,
++        'pv': int(policy_version),
++    }
++    return jwt_service.create_jws_token(
++        payload, expires_in=ttl, audience=JwtAudience.INFERENCE
++    )
++
++
++def verify_inference_token(jwt_service: JwtService, token: str) -> InferencePrincipal:
++    try:
++        claims = jwt_service.verify_jws_token(token, audience=JwtAudience.INFERENCE)
++    except Exception as exc:
++        raise InvalidInferenceToken('signature/audience/expiry') from exc
++    for c in ('iss', 'sub', 'org', 'sid', 'gw', 'jti', 'scope'):
++        v = claims.get(c)
++        if not isinstance(v, str) or not 0 < len(v) <= 256:
++            raise InvalidInferenceToken(f'claim {c}')
++    for c in ('iat', 'exp', 'pv'):
++        if type(claims.get(c)) is not int:
++            raise InvalidInferenceToken(f'claim {c}')
++    if not 0 < claims['exp'] - claims['iat'] <= MAX_TTL.total_seconds():
++        raise InvalidInferenceToken('lifetime')
++    if claims['iss'] != ISSUER or claims['scope'] != SCOPE:
++        raise InvalidInferenceToken('issuer/scope')
++    return InferencePrincipal(
++        claims['sub'],
++        claims['org'],
++        claims['sid'],
++        claims['gw'],
++        claims['pv'],
++        claims['jti'],
++    )
+diff --git a/server/routes/api_keys.py b/server/routes/api_keys.py
+index 79fdbab..09af9ac 100644
+--- a/server/routes/api_keys.py
++++ b/server/routes/api_keys.py
+@@ -14,6 +14,7 @@ from openhands.app_server.user_auth import (
+     reject_service_account,
+ )
+ from openhands.app_server.user_auth.user_auth import AuthType
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.logger import openhands_logger as logger
+ from server.auth.authorization import get_user_super_role
+ from server.auth.org_context import EFFECTIVE_ORG_ID
+@@ -252,6 +253,18 @@ def api_key_to_response(key: ApiKey) -> ApiKeyResponse:
+     )
+ 
+ 
++async def refuse_customer_gateway_org(
++    effective_org_id: UUID = EFFECTIVE_ORG_ID,
++) -> None:
++    """Platform-inference keys are not exported for an org whose inference goes through
++    its own gateway, whatever the caller (browser, API key, automation)."""
++    if await customer_gateway_hooks.gateway_enabled_for_org(effective_org_id):
++        raise HTTPException(
++            status_code=status.HTTP_403_FORBIDDEN,
++            detail='LLM key export is disabled: this organization uses its own inference gateway',
++        )
++
++
+ @api_router.get('/llm/byor/permitted', tags=['Keys'])
+ async def check_byor_permitted(
+     user_id: str = Depends(get_user_id),
+@@ -259,6 +272,8 @@ async def check_byor_permitted(
+ ) -> ByorPermittedResponse:
+     """Check if BYOR key export is permitted for the request's effective org."""
+     try:
++        if await customer_gateway_hooks.gateway_enabled_for_org(effective_org_id):
++            return ByorPermittedResponse(permitted=False)
+         permitted = await OrgService.check_byor_export_enabled(
+             user_id, org_id=effective_org_id
+         )
+@@ -620,6 +635,11 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
+             status_code=status.HTTP_401_UNAUTHORIZED,
+             detail='Sandbox has no owning user',
+         )
++    if await customer_gateway_hooks.gateway_enabled_for_org(sandbox.credential_org_id):
++        raise HTTPException(
++            status_code=status.HTTP_404_NOT_FOUND,
++            detail='Managed LLM keys are not issued to customer-gateway sandboxes',
++        )
+ 
+     try:
+         settings_store = await SaasSettingsStore.get_instance(user_id)
+@@ -643,7 +663,12 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
+ 
+ 
+ @api_router.get(
+-    '/llm/byor', tags=['Keys'], dependencies=[Depends(reject_service_account)]
++    '/llm/byor',
++    tags=['Keys'],
++    dependencies=[
++        Depends(reject_service_account),
++        Depends(refuse_customer_gateway_org),
++    ],
+ )
+ async def get_llm_api_key_for_byor(
+     user_id: str = Depends(get_user_id),
+@@ -724,7 +749,10 @@ async def get_llm_api_key_for_byor(
+ @api_router.post(
+     '/llm/byor/refresh',
+     tags=['Keys'],
+-    dependencies=[Depends(reject_service_account)],
++    dependencies=[
++        Depends(reject_service_account),
++        Depends(refuse_customer_gateway_org),
++    ],
+ )
+ async def refresh_llm_api_key_for_byor(
+     user_id: str = Depends(get_user_id),
+diff --git a/server/routes/users_v1.py b/server/routes/users_v1.py
+index a728d31..4f56710 100644
+--- a/server/routes/users_v1.py
++++ b/server/routes/users_v1.py
+@@ -31,6 +31,7 @@ from openhands.app_server.settings.provider_connections import ProviderConnectio
+ from openhands.app_server.user.auth_user_context import AuthUserContext
+ from openhands.app_server.user.user_context import UserContext
+ from openhands.app_server.user_auth import reject_service_account
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.dependencies import get_dependencies
+ from server.auth.saas_user_auth import SaasUserAuth
+ from server.auth.token_manager import TokenManager
+@@ -141,6 +142,9 @@ async def get_current_user_saas(
+         )
+         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
+         _inject_sdk_compat_fields(content, include_api_key=True)
++        content = await customer_gateway_hooks.sanitize_sandbox_user_export(
++            content, x_session_api_key
++        )
+         return JSONResponse(content=content)  # type: ignore[return-value]
+ 
+     content = user_info.model_dump(mode='json')
+diff --git a/storage/customer_gateway.py b/storage/customer_gateway.py
+new file mode 100644
+index 0000000..4700020
+--- /dev/null
++++ b/storage/customer_gateway.py
+@@ -0,0 +1,56 @@
++"""Opt-in customer gateway: org config and per-member encrypted credential (migration 216)."""
++
++from datetime import datetime
++from typing import Any
++from uuid import UUID
++
++from sqlalchemy import JSON, DateTime, ForeignKey, ForeignKeyConstraint, String, func
++from sqlalchemy.orm import Mapped, mapped_column
++
++from storage.base import Base
++
++
++class CustomerGatewayOrgConfig(Base):
++    __tablename__ = 'customer_gateway_org_config'
++
++    org_id: Mapped[UUID] = mapped_column(
++        ForeignKey('org.id', ondelete='CASCADE'), primary_key=True
++    )
++    gateway_id: Mapped[str] = mapped_column(String, nullable=False)
++    enabled: Mapped[bool] = mapped_column(nullable=False, default=False)
++    profile: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
++    updated_by: Mapped[str] = mapped_column(String, nullable=False)
++    updated_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), nullable=False, server_default=func.now()
++    )
++    # Set only on an OFF->ON transition: sandboxes born before it are refused. Catalog
++    # edits (updated_at) do not invalidate existing conversations.
++    enabled_since: Mapped[datetime | None] = mapped_column(
++        DateTime(timezone=True), nullable=True
++    )
++
++
++class CustomerGatewayMemberCredential(Base):
++    """Customer key is ciphertext only; no code path returns it outside the relay."""
++
++    __tablename__ = 'customer_gateway_member_credential'
++    __table_args__ = (
++        ForeignKeyConstraint(
++            ['org_id', 'user_id'],
++            ['org_member.org_id', 'org_member.user_id'],
++            ondelete='CASCADE',
++        ),
++    )
++
++    org_id: Mapped[UUID] = mapped_column(primary_key=True)
++    user_id: Mapped[UUID] = mapped_column(primary_key=True)
++    ciphertext: Mapped[str] = mapped_column(String, nullable=False)
++    fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
++    credential_version: Mapped[int] = mapped_column(nullable=False, default=1)
++    policy_version: Mapped[int] = mapped_column(nullable=False, default=1)
++    allowed_models: Mapped[list[str]] = mapped_column(JSON, nullable=False)
++    enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
++    updated_by: Mapped[str] = mapped_column(String, nullable=False)
++    updated_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), nullable=False, server_default=func.now()
++    )
+diff --git a/storage/customer_gateway_store.py b/storage/customer_gateway_store.py
+new file mode 100644
+index 0000000..acb0497
+--- /dev/null
++++ b/storage/customer_gateway_store.py
+@@ -0,0 +1,294 @@
++"""Store for the opt-in customer gateway. The only reads are masked metadata and
++the relay's per-request resolution; no API or CLI path returns a customer key."""
++
++from __future__ import annotations
++
++import hashlib
++import logging
++from dataclasses import dataclass, field
++from datetime import datetime
++from typing import Any
++from uuid import UUID
++
++from sqlalchemy import case, func, select, update
++from sqlalchemy.dialects.postgresql import insert
++
++from storage.customer_gateway import (
++    CustomerGatewayMemberCredential,
++    CustomerGatewayOrgConfig,
++)
++from storage.database import a_session_maker
++from storage.encrypt_utils import decrypt_value, encrypt_value
++from storage.org_member import OrgMember
++from storage.user import ACCOUNT_TYPE_HUMAN, User
++
++audit_logger = logging.getLogger('customer_gateway.audit')
++
++
++class CustomerGatewayDenied(Exception):
++    def __init__(self, reason: str):
++        super().__init__(reason)
++        self.reason = reason
++
++
++@dataclass(frozen=True)
++class OrgGateway:
++    org_id: UUID
++    gateway_id: str
++    profile: dict[str, Any]
++    enabled_since: datetime | None = None
++
++
++@dataclass(frozen=True)
++class MemberResolution:
++    upstream_key: str = field(repr=False)
++    fingerprint: str
++    credential_version: int
++    policy_version: int
++    allowed_models: frozenset[str]
++
++
++def fingerprint(key: str) -> str:
++    return hashlib.sha256(key.encode()).hexdigest()[:12]
++
++
++def _audit(event: str, actor: str, **fields: Any) -> None:
++    audit_logger.info(
++        'customer_gateway_audit',
++        extra={
++            'event': event,
++            'actor': actor,
++            **{k: str(v) for k, v in fields.items()},
++        },
++    )
++
++
++def _require_active_user(is_disabled: bool, deletion_pending: bool) -> None:
++    # Same user conditions as server.auth.saas_user_auth._require_active_user, checked on
++    # every mint and every relay request, so a disable takes effect before token expiry.
++    if is_disabled or deletion_pending:
++        raise CustomerGatewayDenied('user_inactive')
++
++
++class CustomerGatewayStore:
++    @staticmethod
++    async def get_enabled_org_gateway(org_id: UUID) -> OrgGateway | None:
++        async with a_session_maker() as session:
++            row = await session.get(CustomerGatewayOrgConfig, org_id)
++        if row is None or not row.enabled:
++            return None
++        return OrgGateway(
++            row.org_id, row.gateway_id, dict(row.profile), row.enabled_since
++        )
++
++    @staticmethod
++    async def set_org_gateway(
++        org_id: UUID,
++        gateway_id: str,
++        profile: dict[str, Any],
++        enabled: bool,
++        actor: str,
++    ) -> None:
++        values = dict(
++            org_id=org_id,
++            gateway_id=gateway_id,
++            profile=profile,
++            enabled=enabled,
++            updated_by=actor,
++        )
++        table = CustomerGatewayOrgConfig
++        stmt = insert(table).values(
++            **values, enabled_since=func.now() if enabled else None
++        )
++        stmt = stmt.on_conflict_do_update(
++            index_elements=['org_id'],
++            set_={
++                **{k: v for k, v in values.items() if k != 'org_id'},
++                'updated_at': func.now(),
++                'enabled_since': case(
++                    (~stmt.excluded.enabled, None),
++                    (~table.enabled, func.now()),
++                    else_=table.enabled_since,
++                ),
++            },
++        )
++        async with a_session_maker() as session:
++            await session.execute(stmt)
++            await session.commit()
++        _audit(
++            'org_gateway_set',
++            actor,
++            org_id=org_id,
++            gateway_id=gateway_id,
++            enabled=enabled,
++        )
++
++    @staticmethod
++    async def set_member_credential(
++        org_id: UUID, user_id: UUID, key: str, allowed_models: list[str], actor: str
++    ) -> int:
++        """Insert or atomically rotate one member's key; identity stays (org_id, user_id)."""
++        if not key.strip():
++            raise ValueError('empty key')
++        async with a_session_maker() as session:
++            user = (
++                await session.execute(
++                    select(
++                        User.account_type,
++                        User.is_disabled,
++                        User.deletion_pending,
++                        OrgMember.user_id.label('member_id'),
++                    )
++                    .outerjoin(
++                        OrgMember,
++                        (OrgMember.user_id == User.id) & (OrgMember.org_id == org_id),
++                    )
++                    .where(User.id == user_id)
++                )
++            ).first()
++        # Explicit, operator-readable denial; the composite FK to org_member still
++        # enforces membership at insert time.
++        if user is None or user.member_id is None:
++            raise CustomerGatewayDenied('not_a_member')
++        if user.account_type != ACCOUNT_TYPE_HUMAN:
++            raise CustomerGatewayDenied('service_account')
++        _require_active_user(user.is_disabled, user.deletion_pending)
++        fp = fingerprint(key)
++        table = CustomerGatewayMemberCredential
++        stmt = insert(table).values(
++            org_id=org_id,
++            user_id=user_id,
++            ciphertext=encrypt_value(key),
++            fingerprint=fp,
++            allowed_models=sorted(set(allowed_models)),
++            updated_by=actor,
++        )
++        upsert = stmt.on_conflict_do_update(
++            index_elements=['org_id', 'user_id'],
++            set_={
++                'ciphertext': stmt.excluded.ciphertext,
++                'fingerprint': stmt.excluded.fingerprint,
++                'allowed_models': stmt.excluded.allowed_models,
++                'credential_version': table.credential_version + 1,
++                'updated_by': actor,
++                'updated_at': func.now(),
++            },
++        ).returning(table.credential_version)
++        async with a_session_maker() as session:
++            version = (await session.execute(upsert)).scalar_one()
++            await session.commit()
++        _audit(
++            'member_credential_set',
++            actor,
++            org_id=org_id,
++            user_id=user_id,
++            fingerprint=fp,
++            credential_version=version,
++        )
++        return version
++
++    @staticmethod
++    async def set_member_enabled(
++        org_id: UUID, user_id: UUID, enabled: bool, actor: str
++    ) -> int:
++        """Disabling also bumps policy_version so every outstanding inference token dies."""
++        table = CustomerGatewayMemberCredential
++        stmt = (
++            update(table)
++            .where(table.org_id == org_id, table.user_id == user_id)
++            .values(
++                enabled=enabled,
++                policy_version=table.policy_version + 1,
++                updated_by=actor,
++                updated_at=func.now(),
++            )
++            .returning(table.policy_version)
++        )
++        async with a_session_maker() as session:
++            version = (await session.execute(stmt)).scalar_one_or_none()
++            await session.commit()
++        if version is None:
++            raise CustomerGatewayDenied('no_credential')
++        _audit(
++            'member_enabled_set',
++            actor,
++            org_id=org_id,
++            user_id=user_id,
++            enabled=enabled,
++            policy_version=version,
++        )
++        return version
++
++    @staticmethod
++    async def masked_status(org_id: UUID) -> list[dict[str, Any]]:
++        table = CustomerGatewayMemberCredential
++        async with a_session_maker() as session:
++            rows = await session.execute(
++                select(
++                    table.user_id,
++                    table.fingerprint,
++                    table.credential_version,
++                    table.policy_version,
++                    table.allowed_models,
++                    table.enabled,
++                ).where(table.org_id == org_id)
++            )
++            return [dict(r._mapping) for r in rows]
++
++    @staticmethod
++    async def current_policy_version(org_id: UUID, user_id: UUID) -> int:
++        """For token minting: requires an active member with an enabled credential."""
++        res = await CustomerGatewayStore._load(org_id, user_id)
++        return res.policy_version
++
++    @staticmethod
++    async def resolve(
++        org_id: UUID, user_id: UUID, policy_version: int
++    ) -> MemberResolution:
++        res = await CustomerGatewayStore._load(org_id, user_id)
++        if res.policy_version != policy_version:
++            raise CustomerGatewayDenied('token_revoked')
++        return res
++
++    @staticmethod
++    async def _load(org_id: UUID, user_id: UUID) -> MemberResolution:
++        table = CustomerGatewayMemberCredential
++        async with a_session_maker() as session:
++            row = (
++                await session.execute(
++                    select(
++                        table,
++                        OrgMember.status,
++                        User.account_type,
++                        User.is_disabled,
++                        User.deletion_pending,
++                    )
++                    .join(
++                        OrgMember,
++                        (OrgMember.org_id == table.org_id)
++                        & (OrgMember.user_id == table.user_id),
++                    )
++                    .join(User, User.id == table.user_id)
++                    .where(table.org_id == org_id, table.user_id == user_id)
++                )
++            ).first()
++        if row is None:
++            raise CustomerGatewayDenied('no_credential')
++        cred, member_status, account_type, is_disabled, deletion_pending = row
++        # Principal from the user row, never from a caller-supplied launch trigger.
++        if account_type != ACCOUNT_TYPE_HUMAN:
++            raise CustomerGatewayDenied('service_account')
++        _require_active_user(is_disabled, deletion_pending)
++        # Native states: active, inactive, invited, disabled. NULL is legacy active:
++        # OrgMemberStore.add_user_to_org defaults status to None for real members.
++        if member_status not in ('active', None):
++            raise CustomerGatewayDenied('membership_inactive')
++        if not cred.enabled:
++            raise CustomerGatewayDenied('credential_disabled')
++        return MemberResolution(
++            upstream_key=decrypt_value(cred.ciphertext),
++            fingerprint=cred.fingerprint,
++            credential_version=cred.credential_version,
++            policy_version=cred.policy_version,
++            allowed_models=frozenset(cred.allowed_models),
++        )
+diff --git a/storage/saas_settings_store.py b/storage/saas_settings_store.py
+index eda76a7..919af76 100644
+--- a/storage/saas_settings_store.py
++++ b/storage/saas_settings_store.py
+@@ -26,6 +26,7 @@ from openhands.app_server.settings.settings_models import (
+     normalize_member_agent_settings_diff,
+ )
+ from openhands.app_server.settings.settings_store import SettingsStore
++from openhands.app_server.utils import customer_gateway_hooks
+ from openhands.app_server.utils.jsonpatch_compat import deep_merge
+ from openhands.app_server.utils.llm import is_openhands_model
+ from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
+@@ -965,7 +966,10 @@ class SaasSettingsStore(SettingsStore):
+                 },
+             )
+ 
+-            if managed_config is not None:
++            # Checked before any managed-key provisioning: a customer-gateway org never
++            # gets a managed LiteLLM key created or reused by a settings save.
++            gateway_on = await customer_gateway_hooks.gateway_enabled_for_org(org_id)
++            if managed_config is not None and not gateway_on:
+                 fallback_api_key = (
+                     org_member.llm_api_key
+                     if not org._llm_api_key
+@@ -1037,19 +1041,38 @@ class SaasSettingsStore(SettingsStore):
+                 else None
+             )
+ 
+-            # A non-managed (BYOR) key is the org's key for the shared
+-            # provider, so it does reach every member row.
+-            await OrgMemberStore.update_all_members_settings_async(
+-                session,
+-                org_id,
+-                OrgMemberSettingsUpdate(
+-                    llm_api_key=(
+-                        current_member_llm_api_key_raw  # type: ignore[arg-type]
+-                        if managed_config is None
+-                        else None
++            # Customer-gateway orgs: inference keys live only in the gateway tables
++            # (operator CLI). A save must not fan a key out to other members or
++            # persist an entered key or inference bearer into legacy key rows.
++            if gateway_on:
++                stored = org_member.llm_api_key
++                stored_raw = stored.get_secret_value() if stored else None
++                if managed_config is None and current_member_llm_api_key_raw not in (
++                    None,
++                    stored_raw,
++                ):
++                    raise HTTPException(
++                        409,
++                        detail={
++                            'code': 'customer_gateway_llm_key_managed',
++                            'message': 'LLM credentials for this organization are '
++                            'managed by its inference gateway administrator.',
++                        },
++                    )
++            else:
++                # A non-managed (BYOR) key is the org's key for the shared
++                # provider, so it does reach every member row.
++                await OrgMemberStore.update_all_members_settings_async(
++                    session,
++                    org_id,
++                    OrgMemberSettingsUpdate(
++                        llm_api_key=(
++                            current_member_llm_api_key_raw  # type: ignore[arg-type]
++                            if managed_config is None
++                            else None
++                        ),
+                     ),
+-                ),
+-            )
++                )
+ 
+             member_mcp_config = org_member.effective_mcp_config
+             # The dump merged in below holds sub-agents in ``tools`` and carries
+@@ -1084,7 +1107,9 @@ class SaasSettingsStore(SettingsStore):
+                     )
+                     org_member.mcp_config = member_mcp_config
+ 
+-            if managed_config is not None and current_member_llm_api_key is not None:
++            if gateway_on:
++                pass
++            elif managed_config is not None and current_member_llm_api_key is not None:
+                 # Managed/proxy key — store on this member but mark as org-managed
+                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
+                 org_member.has_custom_llm_api_key = False
+diff --git a/tests/unit/server/customer_gateway/__init__.py b/tests/unit/server/customer_gateway/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_export.py b/tests/unit/server/customer_gateway/test_customer_gateway_export.py
+new file mode 100644
+index 0000000..7a80602
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_export.py
+@@ -0,0 +1,214 @@
++"""Sandbox-facing LLM-config export surfaces while ON: no stored managed LLM key leaves the app.
++
++Native handlers are called directly; only the sandbox/session lookup and the store are stubbed."""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock, patch
++from uuid import uuid4
++
++import pytest
++from fastapi import HTTPException
++from pydantic import SecretStr
++
++from openhands.app_server.sandbox import session_auth
++from openhands.app_server.settings.llm_profiles import LLMProfiles
++from openhands.app_server.user import user_router
++from openhands.app_server.user.user_models import UserInfo
++from openhands.sdk import LLM
++from server.customer_gateway import service
++from server.routes import api_keys
++
++CANARY = 'sk-managed-canary-7f3e9a1b2c'
++ORG = uuid4()
++SB = SimpleNamespace(
++    id='sb1',
++    created_by_user_id=str(uuid4()),
++    credential_org_id=ORG,
++    status=service.SandboxStatus.RUNNING,
++)
++GW = service.OrgGateway(
++    ORG, 'gw', {'base_url': 'https://gw.example/v1', 'models': {'m': 'm'}}
++)
++
++
++def _user():
++    managed = LLM(
++        model='litellm_proxy/claude',
++        base_url='http://litellm:4000',
++        api_key=SecretStr(CANARY),
++        usage_id='agent',
++    )
++    user = UserInfo(id='u1')
++    settings = user.agent_settings.model_copy(update={'llm': managed})
++    return user.model_copy(
++        update={
++            'agent_settings': settings,
++            'llm_profiles': LLMProfiles(
++                profiles={'p': managed.model_copy(update={'usage_id': 'p'})}
++            ),
++        }
++    )
++
++
++@pytest.fixture
++def on(monkeypatch):
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
++    monkeypatch.setenv(
++        'CUSTOMER_GATEWAY_RELAY_URL', 'https://app/api/customer-gateway/v1'
++    )
++    monkeypatch.setenv(
++        'CUSTOMER_GATEWAY_TOKEN_URL', 'https://app/api/customer-gateway/token'
++    )
++
++
++async def _users_me(gw, lookup=None):
++    ctx = MagicMock()
++    ctx.get_user_info = AsyncMock(return_value=_user())
++    with (
++        patch.object(user_router, 'validate_session_key_ownership', AsyncMock()),
++        patch.object(
++            session_auth,
++            'validate_session_key',
++            lookup or AsyncMock(return_value=SB),
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++    ):
++        resp = await user_router.get_current_user(
++            user_context=ctx, expose_secrets=True, x_session_api_key='sess'
++        )
++    return resp.body.decode()
++
++
++async def test_users_me_expose_secrets_withholds_managed_key_when_on(on):
++    body = await _users_me(GW)
++    assert CANARY not in body
++    data = json.loads(body)
++    assert data['id'] == 'u1'
++    assert data['customer_gateway']['llm_export'] == 'unsupported'
++    for llm in (data['llm_profiles']['profiles']['p'], data['agent_settings']['llm']):
++        assert llm['base_url'] == 'https://app/api/customer-gateway/v1'
++        assert llm['api_key'] == service.UNSUPPORTED_EXPORT_PLACEHOLDER
++        assert llm['model'] == service.EXPORT_MODEL and llm['api_mode'] == 'chat'
++    assert 'litellm' not in body
++    unchanged = _user().model_dump(mode='json', context={'expose_secrets': True})
++    llm_keys = {'agent_settings', 'llm_profiles', 'customer_gateway'}
++    assert {k: v for k, v in data.items() if k not in llm_keys} == {
++        k: v for k, v in unchanged.items() if k not in llm_keys
++    }
++
++
++async def test_users_me_unchanged_for_org_without_gateway(on):
++    assert CANARY in await _users_me(None)
++
++
++async def test_users_me_unchanged_when_globally_off(monkeypatch):
++    monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(side_effect=AssertionError),
++    ):
++        lookup = AsyncMock(side_effect=AssertionError('extra OFF session lookup'))
++        assert CANARY in await _users_me(GW, lookup)
++        lookup.assert_not_called()
++
++
++@pytest.mark.parametrize('on_org', ['payload', 'sandbox'])
++async def test_users_me_cross_org_sandbox_refused_when_either_org_is_on(on, on_org):
++    other = uuid4()
++    payload = {'org_id': str(other), 'llm_api_key': CANARY}
++    gws = {other: GW} if on_org == 'payload' else {ORG: GW}
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(side_effect=lambda o: gws.get(o)),
++    ):
++        with pytest.raises(HTTPException) as exc:
++            await service.sanitize_sandbox_user_export(payload, SB)
++    assert exc.value.status_code == 409 and CANARY not in str(exc.value.detail)
++
++
++async def _managed_current(gw):
++    req = MagicMock()
++    req.headers = {'X-Session-API-Key': 'sess'}
++    store = MagicMock()
++    store.resolve_valid_managed_llm_key = AsyncMock(return_value=CANARY)
++    with (
++        patch.object(api_keys, 'validate_session_key', AsyncMock(return_value=SB)),
++        patch.object(
++            api_keys.SaasSettingsStore, 'get_instance', AsyncMock(return_value=store)
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++    ):
++        return await api_keys.get_managed_llm_key_for_sandbox(req)
++
++
++async def test_managed_key_refresh_refused_for_gateway_sandbox(on):
++    with pytest.raises(HTTPException) as exc:
++        await _managed_current(GW)
++    assert exc.value.status_code == 404 and CANARY not in str(exc.value.detail)
++
++
++async def test_managed_key_refresh_unchanged_for_org_without_gateway(on):
++    assert (await _managed_current(None)).body.decode() == CANARY
++
++
++async def test_byor_export_refused_for_gateway_org_any_caller(on):
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(return_value=GW),
++    ):
++        with pytest.raises(HTTPException) as exc:
++            await api_keys.refuse_customer_gateway_org(effective_org_id=ORG)
++        assert exc.value.status_code == 403
++        permitted = await api_keys.check_byor_permitted(
++            user_id='u1', effective_org_id=ORG
++        )
++        assert permitted.permitted is False
++
++
++@pytest.mark.parametrize('global_on', [True, False])
++async def test_byor_export_unchanged_without_gateway(monkeypatch, global_on):
++    if global_on:
++        monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
++        monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'https://app/r')
++        monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_URL', 'https://app/t')
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=None)
++            if global_on
++            else AsyncMock(side_effect=AssertionError),
++        ),
++        patch.object(
++            api_keys.OrgService,
++            'check_byor_export_enabled',
++            AsyncMock(return_value=True),
++        ),
++    ):
++        await api_keys.refuse_customer_gateway_org(effective_org_id=ORG)
++        permitted = await api_keys.check_byor_permitted(
++            user_id='u1', effective_org_id=ORG
++        )
++        assert permitted.permitted is True
++
++
++def test_byor_routes_carry_the_gateway_dependency():
++    paths = {
++        (r.path, tuple(sorted(r.methods))): [d.call for d in r.dependant.dependencies]
++        for r in api_keys.api_router.routes
++        if r.path.endswith('/llm/byor') or r.path.endswith('/llm/byor/refresh')
++    }
++    assert len(paths) == 2
++    assert all(api_keys.refuse_customer_gateway_org in deps for deps in paths.values())
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_relay.py b/tests/unit/server/customer_gateway/test_customer_gateway_relay.py
+new file mode 100644
+index 0000000..f0bcd11
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_relay.py
+@@ -0,0 +1,284 @@
++"""Relay + token endpoint through the real authorizer. Sandbox service and DB-backed store calls are
++stubbed at their module boundary; store behaviour itself is covered in tests/unit/storage."""
++
++from datetime import timedelta
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++from uuid import uuid4
++
++import httpx
++import pytest
++from fastapi import FastAPI, HTTPException
++from pydantic import SecretStr
++
++from openhands.app_server.services.jwt_service import JwtAudience, JwtService
++from openhands.app_server.utils.encryption_key import EncryptionKey
++from server.customer_gateway import routes, service
++from server.customer_gateway.relay import InferenceRelay, RelayConfig
++from server.customer_gateway.tokens import mint_inference_token
++from storage.customer_gateway_store import (
++    CustomerGatewayDenied,
++    MemberResolution,
++    OrgGateway,
++)
++
++JWT = JwtService(
++    keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++)
++KEY = 'sk-customer-test-0123456789'
++ORG, USER = uuid4(), uuid4()
++GW = OrgGateway(
++    ORG,
++    'gw',
++    {
++        'base_url': 'https://gw.customer.example/v1',
++        'models': {'deepseek': 'deepseek/chat', 'sonnet': 'anthropic/sonnet'},
++    },
++)
++RES = MemberResolution(KEY, 'fp', 2, 5, frozenset({'deepseek'}))
++SB = dict(
++    id='sb1',
++    created_by_user_id=str(USER),
++    credential_org_id=ORG,
++    status=service.SandboxStatus.RUNNING,
++)
++
++
++@pytest.fixture(autouse=True)
++def on(monkeypatch):
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
++    monkeypatch.setenv(
++        'CUSTOMER_GATEWAY_RELAY_URL', 'https://app/api/customer-gateway/v1'
++    )
++    monkeypatch.setenv(
++        'CUSTOMER_GATEWAY_TOKEN_URL', 'https://app/api/customer-gateway/token'
++    )
++    with patch.object(service, '_jwt', return_value=JWT):
++        yield
++
++
++def _token(**kw):
++    a = dict(
++        user_id=str(USER),
++        org_id=str(ORG),
++        sandbox_id='sb1',
++        gateway_id='gw',
++        policy_version=5,
++        ttl=timedelta(minutes=5),
++    )
++    a.update(kw)
++    return mint_inference_token(JWT, **a)
++
++
++def _client(upstream_seen, sandbox=SB, gw=GW, resolve=None):
++    def upstream(req):
++        upstream_seen.append(req)
++        return httpx.Response(
++            200,
++            stream=httpx.ByteStream(b'{"ok":true}'),
++            headers={'content-type': 'application/json'},
++        )
++
++    relay = InferenceRelay(
++        RelayConfig(),
++        service.authorize_inference,
++        httpx.AsyncClient(transport=httpx.MockTransport(upstream)),
++    )
++    app = FastAPI()
++    for r in relay.routes():
++        app.add_route(
++            '/api/customer-gateway' + r.path, r.endpoint, methods=list(r.methods)
++        )
++    patches = [
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            service,
++            'get_sandbox',
++            AsyncMock(return_value=SimpleNamespace(**sandbox) if sandbox else None),
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'resolve',
++            resolve or AsyncMock(return_value=RES),
++        ),
++    ]
++    for p in patches:
++        p.start()
++    return httpx.AsyncClient(
++        transport=httpx.ASGITransport(app=app), base_url='http://app'
++    ), patches
++
++
++async def _post(seen, headers, body=None, **kw):
++    c, patches = _client(seen, **kw)
++    try:
++        return await c.post(
++            '/api/customer-gateway/v1/chat/completions',
++            headers=headers,
++            json=body
++            or {'model': 'deepseek', 'messages': [{'role': 'user', 'content': 'hi'}]},
++        )
++    finally:
++        for p in patches:
++            p.stop()
++
++
++async def test_allowed_request_injects_customer_key_server_side():
++    seen = []
++    r = await _post(
++        seen,
++        {
++            'Authorization': f'Bearer {_token()}',
++            'X-Api-Key': 'forged',
++            'X-OpenHands-User': 'someone-else',
++        },
++    )
++    assert r.status_code == 200 and KEY not in r.text
++    up = seen[0]
++    assert (
++        up.headers['authorization'] == f'Bearer {KEY}'
++        and 'x-api-key' not in up.headers
++        and 'x-openhands-user' not in up.headers
++    )
++    assert str(up.url) == 'https://gw.customer.example/v1/chat/completions'
++    assert b'"deepseek/chat"' in up.content
++
++
++@pytest.mark.parametrize(
++    'case,headers,kw,code',
++    [
++        ('missing', {}, {}, 401),
++        ('session key only', {'X-Session-API-Key': 'sess'}, {}, 401),
++        (
++            'wrong audience',
++            {
++                'Authorization': 'Bearer '
++                + JWT.create_jws_token(
++                    {'sub': 'u'},
++                    expires_in=timedelta(minutes=5),
++                    audience=JwtAudience.SIGNUP_LINK,
++                )
++            },
++            {},
++            401,
++        ),
++        (
++            'paused sandbox',
++            None,
++            {'sandbox': {**SB, 'status': service.SandboxStatus.PAUSED}},
++            403,
++        ),
++        (
++            'other owner',
++            None,
++            {'sandbox': {**SB, 'created_by_user_id': str(uuid4())}},
++            403,
++        ),
++        ('other org', None, {'sandbox': {**SB, 'credential_org_id': uuid4()}}, 403),
++        ('missing sandbox', None, {'sandbox': None}, 403),
++        ('gateway off', None, {'gw': None}, 403),
++        (
++            'revoked',
++            None,
++            {'resolve': AsyncMock(side_effect=CustomerGatewayDenied('token_revoked'))},
++            403,
++        ),
++    ],
++)
++async def test_denials_never_reach_upstream(case, headers, kw, code):
++    seen = []
++    r = await _post(
++        seen,
++        headers if headers is not None else {'Authorization': f'Bearer {_token()}'},
++        **kw,
++    )
++    assert r.status_code == code, case
++    assert not seen
++
++
++async def test_model_not_permitted_for_member():
++    seen = []
++    r = await _post(
++        seen,
++        {'Authorization': f'Bearer {_token()}'},
++        {'model': 'sonnet', 'messages': []},
++    )
++    assert (
++        r.status_code == 403
++        and r.json()['error']['code'] == 'model_not_permitted'
++        and not seen
++    )
++
++
++async def _token_endpoint(sandbox_or_exc, gw=GW, pv=None):
++    pv = pv or AsyncMock(return_value=5)
++    app = FastAPI()
++    app.include_router(routes.build_router())
++    v = (
++        AsyncMock(side_effect=sandbox_or_exc)
++        if isinstance(sandbox_or_exc, Exception)
++        else AsyncMock(return_value=sandbox_or_exc)
++    )
++    with (
++        patch.object(routes, 'validate_session_key', v),
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(service.CustomerGatewayStore, 'current_policy_version', pv),
++    ):
++        async with httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=app), base_url='http://app'
++        ) as c:
++            return await c.get(
++                '/api/customer-gateway/token', headers={'X-Session-API-Key': 'sess'}
++            )
++
++
++async def test_token_endpoint_mints_sandbox_bound_token_not_key():
++    r = await _token_endpoint(SimpleNamespace(**SB))
++    assert r.status_code == 200 and KEY not in r.text
++    p = service.verify_inference_token(JWT, r.text)
++    assert (p.user_id, p.org_id, p.session_id, p.policy_version) == (
++        str(USER),
++        str(ORG),
++        'sb1',
++        5,
++    )
++
++
++async def test_token_endpoint_denials():
++    assert (
++        await _token_endpoint(HTTPException(401, 'Invalid session API key'))
++    ).status_code == 401
++    assert (await _token_endpoint(SimpleNamespace(**SB), gw=None)).status_code == 404
++    r = await _token_endpoint(
++        SimpleNamespace(**SB),
++        pv=AsyncMock(side_effect=CustomerGatewayDenied('credential_disabled')),
++    )
++    assert r.status_code == 403
++
++
++def _assert_no_store(r):
++    assert r.headers['cache-control'] == 'no-store, private'
++    assert r.headers['pragma'] == 'no-cache'
++    assert r.headers['vary'] == 'X-Session-API-Key'
++
++
++async def test_token_endpoint_responses_are_never_cacheable():
++    _assert_no_store(await _token_endpoint(SimpleNamespace(**SB)))
++    _assert_no_store(
++        await _token_endpoint(HTTPException(401, 'Invalid session API key'))
++    )
++    _assert_no_store(await _token_endpoint(SimpleNamespace(**SB), gw=None))
++    _assert_no_store(
++        await _token_endpoint(
++            SimpleNamespace(**SB),
++            pv=AsyncMock(side_effect=CustomerGatewayDenied('credential_disabled')),
++        )
++    )
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_relay_limits.py b/tests/unit/server/customer_gateway/test_customer_gateway_relay_limits.py
+new file mode 100644
+index 0000000..5060262
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_relay_limits.py
+@@ -0,0 +1,195 @@
++"""Relay bounds on the native mount: capacity, body size, redirects, error and cancel release.
++
++Same authorizer and stubs as test_customer_gateway_relay.py; upstream is an httpx MockTransport."""
++
++import json
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++
++import httpx
++import pytest
++from starlette.requests import ClientDisconnect, Request
++
++from server.customer_gateway import service
++from server.customer_gateway.relay import InferenceRelay, RelayConfig
++
++from .test_customer_gateway_relay import GW, RES, SB, _token, on  # noqa: F401
++
++BODY = {'model': 'deepseek', 'messages': [{'role': 'user', 'content': 'hi'}]}
++STREAM_GW = type(GW)(
++    GW.org_id, GW.gateway_id, {**GW.profile, 'capabilities': ['stream']}
++)
++
++
++@pytest.fixture
++def stubs():
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=STREAM_GW),
++        ),
++        patch.object(
++            service, 'get_sandbox', AsyncMock(return_value=SimpleNamespace(**SB))
++        ),
++        patch.object(
++            service.CustomerGatewayStore, 'resolve', AsyncMock(return_value=RES)
++        ),
++    ):
++        yield
++
++
++def _relay(handler, **cfg):
++    seen: list[httpx.Request] = []
++
++    def upstream(req):
++        seen.append(req)
++        return handler(req)
++
++    relay = InferenceRelay(
++        RelayConfig(**cfg),
++        service.authorize_inference,
++        httpx.AsyncClient(transport=httpx.MockTransport(upstream)),
++    )
++    return relay, seen
++
++
++def _request(body=BODY):
++    raw = json.dumps(body).encode()
++    sent = False
++
++    async def receive():
++        nonlocal sent
++        if sent:
++            return {'type': 'http.disconnect'}
++        sent = True
++        return {'type': 'http.request', 'body': raw, 'more_body': False}
++
++    return Request(
++        {
++            'type': 'http',
++            'method': 'POST',
++            'path': '/v1/chat/completions',
++            'query_string': b'',
++            'headers': [
++                (b'authorization', f'Bearer {_token()}'.encode()),
++                (b'content-type', b'application/json'),
++                (b'content-length', str(len(raw)).encode()),
++            ],
++        },
++        receive,
++    )
++
++
++def _ok(req):
++    return httpx.Response(
++        200,
++        stream=httpx.ByteStream(b'{"ok":true}'),
++        headers={'content-type': 'application/json'},
++    )
++
++
++async def test_capacity_429_without_upstream(stubs):
++    relay, seen = _relay(_ok, max_inflight=1)
++    relay._inflight = 1
++    resp = await relay.chat_completions(_request())
++    assert resp.status_code == 429 and seen == []
++
++
++async def test_body_over_limit_413_without_upstream(stubs):
++    relay, seen = _relay(_ok, max_body_bytes=64)
++    big = {**BODY, 'messages': [{'role': 'user', 'content': 'x' * 200}]}
++    resp = await relay.chat_completions(_request(big))
++    assert resp.status_code == 413 and seen == [] and relay._inflight == 0
++
++
++async def test_redirect_refused_and_slot_released(stubs):
++    relay, seen = _relay(
++        lambda r: httpx.Response(302, headers={'location': 'https://evil.example/'})
++    )
++    resp = await relay.chat_completions(_request())
++    assert resp.status_code == 424 and len(seen) == 1 and relay._inflight == 0
++
++
++async def test_upstream_error_releases_slot(stubs):
++    relay, _ = _relay(
++        lambda r: httpx.Response(500, stream=httpx.ByteStream(b'{"error":"x"}'))
++    )
++    resp = await relay.chat_completions(_request())
++    assert resp.status_code == 500 and relay._inflight == 0
++
++
++async def test_client_cancel_mid_stream_releases_slot_and_closes_upstream(stubs):
++    closed = []
++
++    class Chunks(httpx.AsyncByteStream):
++        async def __aiter__(self):
++            for _ in range(100):
++                yield b'data: {"choices":[]}\n\n'
++
++        async def aclose(self):
++            closed.append(True)
++
++    relay, _ = _relay(
++        lambda r: httpx.Response(
++            200, stream=Chunks(), headers={'content-type': 'text/event-stream'}
++        )
++    )
++    resp = await relay.chat_completions(_request({**BODY, 'stream': True}))
++    assert relay._inflight == 1
++    sent = []
++
++    async def send(message):
++        sent.append(message)
++        if len(sent) >= 3:
++            raise OSError('client went away')
++
++    async def receive():
++        return {'type': 'http.disconnect'}
++
++    with pytest.raises((OSError, ClientDisconnect)):
++        await resp({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
++    assert relay._inflight == 0 and closed
++
++
++async def test_per_user_cap_and_release_on_cancel_and_error(stubs):
++    class Chunks(httpx.AsyncByteStream):
++        async def __aiter__(self):
++            for _ in range(100):
++                yield b'data: {"choices":[]}\n\n'
++
++    calls = []
++
++    def handler(req):
++        calls.append(req)
++        if len(calls) == 3:
++            return httpx.Response(500, stream=httpx.ByteStream(b'{"error":"x"}'))
++        return httpx.Response(
++            200, stream=Chunks(), headers={'content-type': 'text/event-stream'}
++        )
++
++    relay, _ = _relay(handler, max_inflight=64, max_inflight_per_user=1)
++    held = await relay.chat_completions(_request({**BODY, 'stream': True}))
++    assert held.status_code == 200 and relay._user_inflight == {
++        SB['created_by_user_id']: 1
++    }
++    second = await relay.chat_completions(_request({**BODY, 'stream': True}))
++    assert second.status_code == 429 and len(calls) == 1
++
++    async def send(message):
++        raise OSError('client went away')
++
++    async def receive():
++        return {'type': 'http.disconnect'}
++
++    with pytest.raises((OSError, ClientDisconnect)):
++        await held({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
++    assert relay._inflight == 0 and relay._user_inflight == {}
++
++    again = await relay.chat_completions(_request({**BODY, 'stream': True}))
++    assert again.status_code == 200
++    with pytest.raises((OSError, ClientDisconnect)):
++        await again({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
++    failed = await relay.chat_completions(_request())
++    assert failed.status_code == 500
++    assert relay._inflight == 0 and relay._user_inflight == {}
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_saas_routes.py b/tests/unit/server/customer_gateway/test_customer_gateway_saas_routes.py
+new file mode 100644
+index 0000000..94e3a08
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_saas_routes.py
+@@ -0,0 +1,115 @@
++"""Relay paths as mounted in the REAL saas_server app (subprocess, like the users/me test).
++
++ON: the prefixed relay paths reach the relay (401 invalid_token without a bearer, never
++404/405) and the unprefixed /v1 paths are not the relay. OFF: no gateway route exists."""
++
++import json
++import os
++import subprocess
++import sys
++import textwrap
++from pathlib import Path
++
++import pytest
++
++SCRIPT = textwrap.dedent(
++    """
++    import asyncio, json
++    import httpx
++    import saas_server
++
++    PATHS = [
++        ('POST', '/api/customer-gateway/v1/chat/completions'),
++        ('GET', '/api/customer-gateway/v1/models'),
++        ('GET', '/api/customer-gateway/token'),
++        ('POST', '/v1/chat/completions'),
++        ('GET', '/v1/models'),
++    ]
++
++    async def main():
++        out = {'_paths': sorted(
++            r.path for r in saas_server.app.routes
++            if 'customer-gateway' in getattr(r, 'path', '')
++            or getattr(r, 'path', '').startswith('/v1/')
++        )}
++        async with httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=saas_server.app), base_url='http://testserver'
++        ) as c:
++            for method, path in PATHS:
++                # A bogus bearer gets past the SaaS auth middleware to the route itself.
++                r = await c.request(
++                    method,
++                    path,
++                    json={} if method == 'POST' else None,
++                    headers={'Authorization': 'Bearer not.a.token'},
++                )
++                try:
++                    err = r.json().get('error')
++                    code = err.get('code') if isinstance(err, dict) else err
++                except Exception:
++                    code = None
++                out[f'{method} {path}'] = [r.status_code, code]
++        print(json.dumps(out))
++
++    asyncio.run(main())
++    """
++)
++
++
++def _run(tmp_path, enabled: bool) -> dict:
++    frontend = tmp_path / 'frontend' / 'build'
++    frontend.mkdir(parents=True, exist_ok=True)
++    (frontend / 'index.html').write_text('<html></html>')
++    repo_root = Path(__file__).resolve().parents[4]
++    env = os.environ.copy()
++    env.update(
++        PYTHONPATH=f'{repo_root}:{env.get("PYTHONPATH", "")}',
++        OPENHANDS_SUPPRESS_BANNER='1',
++        POSTHOG_CLIENT_KEY='test-posthog-key',
++        SERVE_FRONTEND='false',
++        FRONTEND_DIRECTORY=str(frontend),
++        CUSTOMER_GATEWAY_RELAY_URL='https://app.example/api/customer-gateway/v1',
++        CUSTOMER_GATEWAY_TOKEN_URL='https://app.example/api/customer-gateway/token',
++    )
++    if enabled:
++        env['CUSTOMER_GATEWAY_ENABLED'] = 'true'
++    else:
++        env.pop('CUSTOMER_GATEWAY_ENABLED', None)
++    result = subprocess.run(
++        [sys.executable, '-c', SCRIPT],
++        cwd=tmp_path,
++        env=env,
++        text=True,
++        capture_output=True,
++        timeout=240,
++    )
++    assert result.returncode == 0, result.stderr[-4000:]
++    return json.loads(result.stdout.strip().splitlines()[-1])
++
++
++@pytest.mark.timeout(300)
++def test_relay_mounted_under_configured_prefix_when_on(tmp_path):
++    out = _run(tmp_path, enabled=True)
++    assert out.pop('_paths') == [
++        '/api/customer-gateway/token',
++        '/api/customer-gateway/v1/chat/completions',
++        '/api/customer-gateway/v1/models',
++    ]
++    assert out['POST /api/customer-gateway/v1/chat/completions'] == [
++        401,
++        'invalid_token',
++    ]
++    assert out['GET /api/customer-gateway/v1/models'] == [401, 'invalid_token']
++    assert out['GET /api/customer-gateway/token'][0] in (401, 403)
++    # The SDK saw this 405 when the relay was mounted at /v1/... instead.
++    assert out['POST /v1/chat/completions'][0] == 405
++    for path in ('POST /v1/chat/completions', 'GET /v1/models'):
++        assert out[path][1] != 'invalid_token', path
++
++
++@pytest.mark.timeout(300)
++def test_no_gateway_routes_when_off(tmp_path):
++    out = _run(tmp_path, enabled=False)
++    assert out.pop('_paths') == []
++    for key, (_status, code) in out.items():
++        assert code != 'invalid_token', key
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_saas_users_me.py b/tests/unit/server/customer_gateway/test_customer_gateway_saas_users_me.py
+new file mode 100644
+index 0000000..f66a989
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_saas_users_me.py
+@@ -0,0 +1,151 @@
++"""The LIVE Enterprise /api/v1/users/me route (saas_server overrides the OSS one) withholds
++every stored LLM credential from the sandbox export while ON.
++
++Runs in a subprocess because importing ``saas_server`` builds the full app (same pattern as
++tests/unit/test_saas_server.py). The real app, route table, middleware, SaaS handler and
++``_inject_sdk_compat_fields`` run; only the user context dependency, session-key lookup,
++org-info lookup and the gateway store row are injected."""
++
++import json
++import os
++import subprocess
++import sys
++import textwrap
++from pathlib import Path
++
++import pytest
++
++CANARY = 'sk-byok-canary-5d1e8f2a9b'
++
++SCRIPT = textwrap.dedent(
++    """
++    import asyncio, json, os, sys
++    from types import SimpleNamespace
++    from unittest.mock import AsyncMock, MagicMock, patch
++    from uuid import UUID
++
++    import httpx
++    from pydantic import SecretStr
++    from starlette.routing import Match
++
++    import saas_server
++    from openhands.app_server.sandbox import session_auth
++    from openhands.app_server.settings.provider_connections import ProviderConnections
++    from openhands.app_server.user.user_models import UserInfo
++    from openhands.sdk import LLM
++    from server.customer_gateway import service
++    from server.routes import users_v1
++
++    CANARY, ORG, MODE = sys.argv[1], UUID(sys.argv[2]), sys.argv[3]
++    scope = {'type': 'http', 'path': '/api/v1/users/me', 'root_path': '', 'method': 'GET',
++             'scheme': 'http', 'headers': [], 'query_string': b'expose_secrets=true',
++             'server': ('testserver', 80), 'client': ('testclient', 50000)}
++    route = next(r for r in saas_server.app.router.routes if r.matches(scope)[0] == Match.FULL)
++    assert route.endpoint is users_v1.get_current_user_saas, route.endpoint
++
++    byok = LLM(model='openhands/claude-sonnet', base_url='https://llm-proxy.example',
++               api_key=SecretStr(CANARY), usage_id='agent')
++    user = UserInfo(id='u1')
++    user = user.model_copy(update={
++        'agent_settings': user.agent_settings.model_copy(update={'llm': byok})})
++    ctx = MagicMock()
++    ctx.get_user_info = AsyncMock(return_value=user)
++    ctx.get_provider_connections = AsyncMock(return_value=ProviderConnections())
++    sb_org = ORG if MODE != 'cross_org' else UUID(int=7)
++    sb = SimpleNamespace(id='sb1', created_by_user_id='u1', credential_org_id=sb_org,
++                         status=service.SandboxStatus.RUNNING)
++    gw = service.OrgGateway(ORG, 'gw', {'base_url': 'https://gw.example/v1', 'models': {'m': 'm'}})
++    saas_server.app.dependency_overrides[users_v1.user_dependency.dependency] = lambda: ctx
++
++    async def main():
++        with (
++            patch.object(users_v1, 'validate_session_key_ownership', AsyncMock()),
++            patch.object(users_v1, '_get_org_info_from_context',
++                         AsyncMock(return_value={'org_id': str(ORG)})),
++            patch.object(session_auth, 'validate_session_key', AsyncMock(return_value=sb)),
++            patch.object(service.CustomerGatewayStore, 'get_enabled_org_gateway',
++                         AsyncMock(side_effect=lambda o: gw if o == ORG else None)),
++        ):
++            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=saas_server.app),
++                                         base_url='http://testserver') as c:
++                r = await c.get('/api/v1/users/me', params={'expose_secrets': 'true'},
++                                headers={'X-Session-API-Key': 'sess'})
++        print(json.dumps({'status': r.status_code, 'body': r.text}))
++
++    asyncio.run(main())
++    """
++)
++
++
++def _run(tmp_path, mode: str, enabled: bool) -> dict:
++    frontend = tmp_path / 'frontend' / 'build'
++    frontend.mkdir(parents=True, exist_ok=True)
++    (frontend / 'index.html').write_text('<html></html>')
++    repo_root = Path(__file__).resolve().parents[4]
++    env = os.environ.copy()
++    env.update(
++        PYTHONPATH=f'{repo_root}:{env.get("PYTHONPATH", "")}',
++        OPENHANDS_SUPPRESS_BANNER='1',
++        POSTHOG_CLIENT_KEY='test-posthog-key',
++        SERVE_FRONTEND='false',
++        FRONTEND_DIRECTORY=str(frontend),
++        CUSTOMER_GATEWAY_RELAY_URL='https://app.example/api/customer-gateway/v1',
++        CUSTOMER_GATEWAY_TOKEN_URL='https://app.example/api/customer-gateway/token',
++    )
++    if enabled:
++        env['CUSTOMER_GATEWAY_ENABLED'] = 'true'
++    else:
++        env.pop('CUSTOMER_GATEWAY_ENABLED', None)
++    result = subprocess.run(
++        [
++            sys.executable,
++            '-c',
++            SCRIPT,
++            CANARY,
++            '11111111-1111-1111-1111-111111111111',
++            mode,
++        ],
++        cwd=tmp_path,
++        env=env,
++        text=True,
++        capture_output=True,
++        timeout=240,
++    )
++    assert result.returncode == 0, result.stderr[-4000:]
++    return json.loads(result.stdout.strip().splitlines()[-1])
++
++
++@pytest.mark.timeout(300)
++def test_live_saas_users_me_withholds_all_llm_credentials_when_on(tmp_path):
++    out = _run(tmp_path, 'same_org', enabled=True)
++    assert out['status'] == 200
++    assert CANARY not in out['body']
++    assert 'llm-proxy.example' not in out['body']
++    data = json.loads(out['body'])
++    relay = 'https://app.example/api/customer-gateway/v1'
++    assert data['customer_gateway']['llm_export'] == 'unsupported'
++    assert data['llm_api_key'] == 'customer-gateway-no-standalone-llm'
++    assert data['llm_base_url'] == relay
++    assert data['llm_model'] == 'openai/customer-gateway-unsupported'
++    llm = data['agent_settings']['llm']
++    assert (llm['model'], llm['base_url'], llm['api_mode']) == (
++        'openai/customer-gateway-unsupported',
++        relay,
++        'chat',
++    )
++
++
++@pytest.mark.timeout(300)
++def test_live_saas_users_me_cross_org_sandbox_refused(tmp_path):
++    out = _run(tmp_path, 'cross_org', enabled=True)
++    assert out['status'] == 409
++    assert CANARY not in out['body']
++
++
++@pytest.mark.timeout(300)
++def test_live_saas_users_me_unchanged_when_switch_off(tmp_path):
++    out = _run(tmp_path, 'same_org', enabled=False)
++    assert out['status'] == 200
++    data = json.loads(out['body'])
++    assert data['llm_api_key'] == CANARY
++    assert 'customer_gateway' not in data
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_sdk_refresh.py b/tests/unit/server/customer_gateway/test_customer_gateway_sdk_refresh.py
+new file mode 100644
+index 0000000..a5df385
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_sdk_refresh.py
+@@ -0,0 +1,232 @@
++"""Real SDK 1.62 LLM against the relay over HTTP: an expired inference token is a relay 401 that
++the SDK refreshes and retries once; a customer-gateway key rejection is 424 and never refreshes."""
++
++import json
++import socket
++import threading
++import time
++from datetime import UTC, datetime, timedelta
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++from uuid import uuid4
++
++import httpx
++import pytest
++import uvicorn
++from fastapi import FastAPI
++from pydantic import SecretStr
++
++from openhands.app_server.services.jwt_service import JwtAudience, JwtService
++from openhands.app_server.utils.encryption_key import EncryptionKey
++from openhands.sdk import LLM, Message, TextContent
++from server.customer_gateway import service
++from server.customer_gateway.relay import InferenceRelay, RelayConfig
++from server.customer_gateway.tokens import ISSUER, SCOPE, mint_inference_token
++from storage.customer_gateway_store import MemberResolution, OrgGateway
++
++JWT = JwtService(
++    keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++)
++KEY = 'sk-customer-test-0123456789'
++ORG, USER = uuid4(), uuid4()
++GW = OrgGateway(
++    ORG,
++    'gw',
++    {
++        'base_url': 'https://gw.customer.example/v1',
++        'models': {'deepseek': 'deepseek/chat'},
++    },
++    datetime(2026, 11, 14, tzinfo=UTC),
++)
++SB = SimpleNamespace(
++    id='sb1',
++    created_by_user_id=str(USER),
++    credential_org_id=ORG,
++    status=service.SandboxStatus.RUNNING,
++    created_at=datetime(2026, 11, 15, tzinfo=UTC),
++)
++OK = {
++    'id': 'x',
++    'object': 'chat.completion',
++    'created': 0,
++    'model': 'deepseek/chat',
++    'choices': [
++        {
++            'index': 0,
++            'finish_reason': 'stop',
++            'message': {'role': 'assistant', 'content': 'pong'},
++        }
++    ],
++    'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2},
++}
++
++
++def _resp(status, body):
++    # Unread stream, like a real upstream; the relay streams successful bodies through.
++    return httpx.Response(
++        status,
++        stream=httpx.ByteStream(json.dumps(body).encode()),
++        headers={'content-type': 'application/json'},
++    )
++
++
++def _expired_token():
++    now = int(time.time())
++    return JWT.create_jws_token(
++        {
++            'iss': ISSUER,
++            'sub': str(USER),
++            'org': str(ORG),
++            'sid': 'sb1',
++            'gw': 'gw',
++            'jti': 'j',
++            'scope': SCOPE,
++            'pv': 1,
++            'iat': now - 600,
++        },
++        expires_in=timedelta(seconds=-60),
++        audience=JwtAudience.INFERENCE,
++    )
++
++
++def _fresh_token():
++    return mint_inference_token(
++        JWT,
++        user_id=str(USER),
++        org_id=str(ORG),
++        sandbox_id='sb1',
++        gateway_id='gw',
++        policy_version=1,
++        ttl=timedelta(minutes=5),
++    )
++
++
++@pytest.fixture
++def relay_url(monkeypatch, request):
++    upstream_status = request.param
++    upstream_calls = []
++
++    def upstream(req):
++        upstream_calls.append(req)
++        if upstream_status == 401:
++            return _resp(401, {'error': {'message': f'invalid key {KEY}'}})
++        return _resp(200, OK)
++
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
++    monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'x')
++    monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_URL', 'x')
++    relay = InferenceRelay(
++        RelayConfig(),
++        service.authorize_inference,
++        httpx.AsyncClient(transport=httpx.MockTransport(upstream)),
++    )
++    app = FastAPI()
++    for r in relay.routes():
++        app.add_route(r.path, r.endpoint, methods=list(r.methods))
++    sock = socket.socket()
++    sock.bind(('127.0.0.1', 0))
++    port = sock.getsockname()[1]
++    server = uvicorn.Server(uvicorn.Config(app, log_level='warning'))
++    patches = [
++        patch.object(service, '_jwt', return_value=JWT),
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=GW),
++        ),
++        patch.object(service, 'get_sandbox', AsyncMock(return_value=SB)),
++        patch.object(
++            service.CustomerGatewayStore,
++            'resolve',
++            AsyncMock(
++                return_value=MemberResolution(KEY, 'fp', 1, 1, frozenset({'deepseek'}))
++            ),
++        ),
++    ]
++    for p in patches:
++        p.start()
++    t = threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True)
++    t.start()
++    while not server.started:
++        time.sleep(0.02)
++    yield f'http://127.0.0.1:{port}/v1', upstream_calls
++    server.should_exit = True
++    t.join(5)
++    for p in patches:
++        p.stop()
++
++
++def _llm(base_url):
++    return LLM(
++        model='openai/deepseek',
++        base_url=base_url,
++        api_key=SecretStr(_expired_token()),
++        usage_id='agent',
++        num_retries=0,
++    )
++
++
++def _msg():
++    return [Message(role='user', content=[TextContent(text='ping')])]
++
++
++@pytest.mark.parametrize('relay_url', [200], indirect=True)
++def test_expired_inference_token_refreshes_once_and_succeeds(relay_url):
++    url, upstream_calls = relay_url
++    llm = _llm(url)
++    refreshes = []
++    llm.set_api_key_refresh_hook(lambda: refreshes.append(1) or _fresh_token())
++    resp = llm.completion(_msg())
++    assert refreshes == [1] and len(upstream_calls) == 1
++    assert 'pong' in str(resp.message.content)
++
++
++@pytest.mark.parametrize('relay_url', [401], indirect=True)
++def test_customer_key_rejection_is_424_without_refresh(relay_url):
++    url, upstream_calls = relay_url
++    llm = _llm(url).model_copy(update={'api_key': SecretStr(_fresh_token())})
++    refreshes = []
++    llm.set_api_key_refresh_hook(lambda: refreshes.append(1) or _fresh_token())
++    with pytest.raises(Exception) as exc:
++        llm.completion(_msg())
++    assert refreshes == [] and len(upstream_calls) == 1
++    assert 'customer_gateway_key_rejected' in str(exc.value) and KEY not in str(
++        exc.value
++    )
++
++
++@pytest.mark.parametrize('relay_url', [200], indirect=True)
++async def test_standalone_get_llm_from_export_fails_with_gateway_message(relay_url):
++    """Mirror of openhands-workspace 1.62.0 CloudWorkspace.get_llm(profile_name) (workspace.py
++    585-644): ``LLM(**profiles[name], usage_id=...)`` from the sanitized users/me export."""
++    url, upstream_calls = relay_url
++    exported = {
++        'llm_profiles': {
++            'profiles': {
++                'p': {
++                    'model': 'openai/deepseek',
++                    'base_url': 'http://managed:4000',
++                    'api_key': 'sk-managed-canary',
++                    'usage_id': 'p',
++                }
++            }
++        }
++    }
++    with patch.object(
++        service, 'get_settings', return_value=SimpleNamespace(relay_url=url)
++    ):
++        with patch.object(
++            service, 'org_gateway_for_sandbox', AsyncMock(return_value=GW)
++        ):
++            payload = await service.sanitize_sandbox_user_export(exported, SB)
++    assert payload['customer_gateway']['llm_export'] == 'unsupported'
++    kwargs = dict(payload['llm_profiles']['profiles']['p'])
++    kwargs['usage_id'] = 'profile:p'
++    llm = LLM(**kwargs, num_retries=0)
++    with pytest.raises(Exception) as exc:
++        llm.completion(_msg())
++    text = str(exc.value)
++    assert 'sk-managed-canary' not in text
++    assert 'Customer gateway: no OpenHands inference token' in text
++    assert 'CloudWorkspace.get_llm' in text
++    assert upstream_calls == []
+diff --git a/tests/unit/server/customer_gateway/test_customer_gateway_units.py b/tests/unit/server/customer_gateway/test_customer_gateway_units.py
+new file mode 100644
+index 0000000..ed1eb11
+--- /dev/null
++++ b/tests/unit/server/customer_gateway/test_customer_gateway_units.py
+@@ -0,0 +1,610 @@
++"""DB-free tests: feature-off identity, token contract, LLM binding, profile validation, env wiring."""
++
++import json
++from datetime import UTC, datetime, timedelta
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++from uuid import uuid4
++
++import jwt
++import pytest
++from fastapi import HTTPException
++from pydantic import SecretStr
++
++from openhands.agent_server.models import StartConversationRequest
++from openhands.app_server.sandbox.k8s_agent_sandbox_service import (
++    K8sAgentSandboxServiceInjector,
++)
++from openhands.app_server.sandbox.remote_sandbox_service import (
++    RemoteSandboxService,
++    RemoteSandboxServiceInjector,
++)
++from openhands.app_server.services.jwt_service import JwtAudience, JwtService
++from openhands.app_server.utils import customer_gateway_hooks
++from openhands.app_server.utils.encryption_key import EncryptionKey
++from openhands.sdk import LLM, Agent
++from openhands.sdk.context.condenser import LLMSummarizingCondenser
++from openhands.sdk.workspace import LocalWorkspace
++from server.customer_gateway import service
++from server.customer_gateway.config import get_settings
++from server.customer_gateway.profile import ProfileError, parse_profile
++from server.customer_gateway.tokens import (
++    InvalidInferenceToken,
++    mint_inference_token,
++    verify_inference_token,
++)
++
++JWT = JwtService(
++    keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++)
++PROFILE = parse_profile(
++    {
++        'base_url': 'https://gw.customer.example/v1',
++        'models': {
++            'claude-sonnet': 'anthropic/claude-sonnet',
++            'deepseek': 'deepseek/chat',
++        },
++    }
++)
++RELAY = 'https://app.example/api/customer-gateway/v1'
++ON_ENV = {
++    'CUSTOMER_GATEWAY_ENABLED': 'true',
++    'CUSTOMER_GATEWAY_RELAY_URL': RELAY,
++    'CUSTOMER_GATEWAY_TOKEN_URL': 'https://app.example/api/customer-gateway/token',
++}
++MANAGED_ENV = {
++    'OH_LLM_API_KEY_REFRESH_URL': 'https://app.example/api/keys/llm/managed/current',
++    'OH_LLM_API_KEY_REFRESH_HEADERS': '{"X-Session-API-Key": "${SESSION_API_KEY}"}',
++    'OH_LLM_API_KEY_REFRESH_BASE_URLS': 'http://litellm:4000',
++}
++
++
++def _mint(**kw):
++    args = dict(
++        user_id=str(uuid4()),
++        org_id=str(uuid4()),
++        sandbox_id='sb1',
++        gateway_id='gw',
++        policy_version=1,
++        ttl=timedelta(minutes=5),
++    )
++    args.update(kw)
++    return mint_inference_token(JWT, **args)
++
++
++@pytest.fixture
++def store_untouched():
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(side_effect=AssertionError('DB touched while OFF')),
++    ):
++        yield
++
++
++@pytest.fixture
++def remote_runtime():
++    injector = RemoteSandboxServiceInjector(
++        api_url='http://runtime-api', api_key='test'
++    )
++    with patch.object(
++        service, 'get_global_config', return_value=SimpleNamespace(sandbox=injector)
++    ):
++        yield
++
++
++@pytest.fixture
++def off(monkeypatch):
++    monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
++
++
++def _request():
++    agent = Agent(
++        llm=LLM(
++            model='litellm_proxy/claude-sonnet',
++            base_url='http://litellm:4000',
++            api_key=SecretStr('managed'),
++            usage_id='agent',
++        ),
++        condenser=LLMSummarizingCondenser(
++            llm=LLM(
++                model='litellm_proxy/deepseek',
++                base_url='http://litellm:4000',
++                api_key=SecretStr('managed'),
++                usage_id='condenser',
++            )
++        ),
++    )
++    return StartConversationRequest(
++        agent=agent, workspace=LocalWorkspace(working_dir='/tmp')
++    )
++
++
++def _sandbox(**kw):
++    return SimpleNamespace(
++        **{
++            'id': 'sb1',
++            'created_by_user_id': str(uuid4()),
++            'credential_org_id': uuid4(),
++            'status': service.SandboxStatus.RUNNING,
++            'created_at': datetime(2026, 11, 15, tzinfo=UTC),
++            **kw,
++        }
++    )
++
++
++async def test_off_hooks_are_identity_without_db(off, store_untouched):
++    req, sb = _request(), _sandbox()
++    assert await customer_gateway_hooks.bind_start_request(req, sb) is req
++    llm = req.agent.llm
++    assert await customer_gateway_hooks.bind_profile_llm(llm, sb) is llm
++    env = dict(MANAGED_ENV)
++    assert (
++        await customer_gateway_hooks.sandbox_environment(sb.credential_org_id, env)
++        == MANAGED_ENV
++    )
++    assert (
++        await customer_gateway_hooks.gateway_enabled_for_org(sb.credential_org_id)
++        is False
++    )
++
++
++def test_off_router_not_built(off):
++    from server.customer_gateway.config import get_settings
++
++    assert get_settings() is None
++
++
++def test_token_roundtrip_and_claims():
++    p = verify_inference_token(JWT, _mint(sandbox_id='sbX', policy_version=7))
++    assert (p.session_id, p.policy_version, p.gateway_id) == ('sbX', 7, 'gw')
++
++
++@pytest.mark.parametrize(
++    'audience', [a for a in JwtAudience if a is not JwtAudience.INFERENCE]
++)
++def test_other_audiences_rejected(audience):
++    tok = JWT.create_jws_token(
++        {'iss': 'x', 'sub': 'u'}, expires_in=timedelta(minutes=5), audience=audience
++    )
++    with pytest.raises(InvalidInferenceToken):
++        verify_inference_token(JWT, tok)
++
++
++@pytest.mark.parametrize(
++    'audience', [a for a in JwtAudience if a is not JwtAudience.INFERENCE]
++)
++def test_inference_token_rejected_by_every_other_audience(audience):
++    with pytest.raises(jwt.InvalidTokenError):
++        JWT.verify_jws_token(_mint(), audience=audience)
++
++
++def test_tampered_expired_and_overlong_tokens():
++    tok = _mint()
++    with pytest.raises(InvalidInferenceToken):
++        verify_inference_token(
++            JWT, tok[:-2] + ('AA' if not tok.endswith('AA') else 'BB')
++        )
++    with pytest.raises(InvalidInferenceToken):
++        verify_inference_token(
++            JWT,
++            JWT.create_jws_token(
++                {'iss': 'x'},
++                expires_in=timedelta(seconds=-5),
++                audience=JwtAudience.INFERENCE,
++            ),
++        )
++    with pytest.raises(ValueError):
++        _mint(ttl=timedelta(hours=2))
++
++
++def test_bind_llm_maps_catalog_and_hides_managed_key():
++    llm = LLM(
++        model='litellm_proxy/claude-sonnet',
++        base_url='http://litellm:4000',
++        api_key=SecretStr('managed'),
++        litellm_extra_body={'metadata': {'x': 1}},
++        usage_id='agent',
++    )
++    bound = service.bind_llm(llm, PROFILE, RELAY, 'inference-token')
++    assert (bound.model, bound.base_url, bound.api_key.get_secret_value()) == (
++        'openai/claude-sonnet',
++        RELAY,
++        'inference-token',
++    )
++    assert bound.litellm_extra_body == {} and bound.usage_id == 'agent'
++    with pytest.raises(service.CustomerGatewayLaunchError):
++        service.bind_llm(
++            llm.model_copy(update={'model': 'anthropic/claude-opus'}),
++            PROFILE,
++            RELAY,
++            't',
++        )
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_on_binds_agent_and_condenser(monkeypatch):
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++    sb = _sandbox()
++    gw = _gw(sb.credential_org_id)
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(return_value=3),
++        ),
++        patch.object(service, '_jwt', return_value=JWT),
++    ):
++        out = await customer_gateway_hooks.bind_start_request(_request(), sb)
++    for llm in (out.agent.llm, out.agent.condenser.llm):
++        assert llm.base_url == RELAY
++        p = verify_inference_token(JWT, llm.api_key.get_secret_value())
++        assert (p.user_id, p.org_id, p.session_id, p.policy_version) == (
++            sb.created_by_user_id,
++            str(sb.credential_org_id),
++            'sb1',
++            3,
++        )
++    assert 'managed' not in out.model_dump_json(context={'expose_secrets': True})
++
++
++async def test_on_env_rewires_refresh_only_for_gateway_org(monkeypatch):
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++    org = uuid4()
++    gw = service.OrgGateway(org, 'gw', {})
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(return_value=gw),
++    ):
++        env = await service.sandbox_env_overrides(org, dict(MANAGED_ENV))
++    assert env['OH_LLM_API_KEY_REFRESH_URL'] == ON_ENV['CUSTOMER_GATEWAY_TOKEN_URL']
++    assert env['OH_LLM_API_KEY_REFRESH_BASE_URLS'] == RELAY
++    assert (
++        env['OH_LLM_API_KEY_REFRESH_HEADERS']
++        == MANAGED_ENV['OH_LLM_API_KEY_REFRESH_HEADERS']
++    )
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(return_value=None),
++    ):
++        assert (
++            await service.sandbox_env_overrides(org, dict(MANAGED_ENV)) == MANAGED_ENV
++        )
++
++
++@pytest.mark.parametrize(
++    'bad', [{'base_url': 'http://x/v1'}, {'credential_header': 'host'}, {'models': {}}]
++)
++def test_profile_rejects(bad):
++    with pytest.raises(ProfileError):
++        parse_profile({'base_url': 'https://gw/v1', 'models': {'a': 'b'}, **bad})
++
++
++def _on(monkeypatch):
++    for k, v in ON_ENV.items():
++        monkeypatch.setenv(k, v)
++
++
++def _gw(org):
++    return service.OrgGateway(
++        org,
++        'gw',
++        {'base_url': PROFILE.base_url, 'models': PROFILE.models},
++        datetime(2026, 11, 14, tzinfo=UTC),
++    )
++
++
++def _on_store(gw):
++    return (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            service.CustomerGatewayStore,
++            'current_policy_version',
++            AsyncMock(return_value=1),
++        ),
++        patch.object(service, '_jwt', return_value=JWT),
++    )
++
++
++@pytest.mark.parametrize(
++    'value,expected',
++    [
++        ('1', True),
++        ('true', True),
++        ('TRUE', True),
++        ('yes', False),
++        ('0', False),
++        ('', False),
++    ],
++)
++def test_boolean_env_flags_accept_1_and_true(monkeypatch, value, expected):
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', value)
++    monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', RELAY)
++    monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_URL', 'https://t')
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY', value)
++    settings = get_settings()
++    assert (settings is not None) is expected
++    if settings:
++        assert settings.allow_http is expected
++
++
++def test_bound_llm_has_no_sdk_retries_and_off_keeps_default():
++    llm = LLM(model='litellm_proxy/deepseek', usage_id='agent')
++    assert llm.num_retries > 0
++    assert service.bind_llm(llm, PROFILE, RELAY, 't').num_retries == 0
++
++
++def test_responses_api_llm_refused():
++    llm = LLM(model='litellm_proxy/deepseek', usage_id='agent', api_mode='responses')
++    with pytest.raises(service.CustomerGatewayLaunchError):
++        service.bind_llm(llm, PROFILE, RELAY, 't')
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_invariant_rejects_any_unbound_llm(monkeypatch):
++    _on(monkeypatch)
++    req = _request()
++    half = req.model_copy(
++        update={
++            'agent': req.agent.model_copy(
++                update={'llm': service.bind_llm(req.agent.llm, PROFILE, RELAY, _mint())}
++            )
++        }
++    )
++    with patch.object(service, '_jwt', return_value=JWT):
++        with pytest.raises(service.CustomerGatewayLaunchError, match='condenser'):
++            service.assert_all_llms_bound(half, RELAY)
++        forged = service.bind_llm(
++            req.agent.llm, PROFILE, RELAY, 'not-an-inference-token'
++        )
++        with pytest.raises(service.CustomerGatewayLaunchError, match='non-inference'):
++            service.assert_all_llms_bound(forged, RELAY)
++
++
++@pytest.mark.usefixtures('remote_runtime')
++@pytest.mark.parametrize(
++    'trigger',
++    [
++        'automation',
++        'resolver',
++        'slack',
++        'jira',
++        'jira_dc',
++        'linear',
++        'bitbucket',
++        'microagent_management',
++    ],
++)
++async def test_non_interactive_launch_fails_closed_when_on(monkeypatch, trigger):
++    _on(monkeypatch)
++    sb = _sandbox()
++    a, b, c = _on_store(_gw(sb.credential_org_id))
++    with a, b, c, pytest.raises(service.CustomerGatewayLaunchError, match=trigger):
++        await customer_gateway_hooks.bind_start_request(_request(), sb, trigger)
++
++
++async def test_non_interactive_launch_unchanged_when_off(off, store_untouched):
++    req = _request()
++    assert (
++        await customer_gateway_hooks.bind_start_request(req, _sandbox(), 'automation')
++        is req
++    )
++
++
++async def test_warm_pool_backend_refused(monkeypatch):
++    _on(monkeypatch)
++    sb = _sandbox()
++    a, b, c = _on_store(_gw(sb.credential_org_id))
++    cfg = SimpleNamespace(sandbox=K8sAgentSandboxServiceInjector())
++    with (
++        a,
++        b,
++        c,
++        patch.object(service, 'get_global_config', return_value=cfg),
++        pytest.raises(service.CustomerGatewayLaunchError, match='K8sAgent'),
++    ):
++        await customer_gateway_hooks.bind_start_request(_request(), sb, 'gui')
++
++
++async def test_resume_of_pre_gateway_sandbox_refused(monkeypatch):
++    _on(monkeypatch)
++    org = uuid4()
++    gw = _gw(org)
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(return_value=gw),
++    ):
++        with pytest.raises(HTTPException) as exc:
++            await customer_gateway_hooks.assert_resume_allowed(
++                org, gw.enabled_since - timedelta(minutes=1)
++            )
++        assert exc.value.status_code == 409 and 'predates' in exc.value.detail
++        await customer_gateway_hooks.assert_resume_allowed(
++            org, gw.enabled_since + timedelta(minutes=1)
++        )
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_running_sandbox_born_before_enable_cannot_start_or_bind(monkeypatch):
++    """A RUNNING sandbox created before the OFF->ON switch: a new or sub-conversation
++    naming it, and any profile/title LLM bound into it, are refused (not only resume)."""
++    _on(monkeypatch)
++    sb = _sandbox(created_at=datetime(2026, 11, 13, tzinfo=UTC))
++    gw = _gw(sb.credential_org_id)
++    mint = AsyncMock(side_effect=AssertionError('must refuse before minting'))
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(service, 'mint_for_sandbox', mint),
++    ):
++        with pytest.raises(service.CustomerGatewayLaunchError, match='predates'):
++            await customer_gateway_hooks.bind_start_request(_request(), sb)
++        with pytest.raises(service.CustomerGatewayLaunchError, match='predates'):
++            await customer_gateway_hooks.bind_profile_llm(LLM(model='deepseek'), sb)
++    mint.assert_not_called()
++
++
++async def test_resume_off_untouched(off, store_untouched):
++    await customer_gateway_hooks.assert_resume_allowed(
++        uuid4(), datetime(2000, 1, 1, tzinfo=UTC)
++    )
++
++
++def _with_definition(**kw):
++    from openhands.sdk.subagent.schema import AgentDefinition
++
++    return _request().model_copy(
++        update={
++            'agent_definitions': [AgentDefinition(name='helper', description='d', **kw)]
++        }
++    )
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_definition_with_custom_profile_store_refused(monkeypatch):
++    _on(monkeypatch)
++    sb = _sandbox()
++    a, b, c = _on_store(_gw(sb.credential_org_id))
++    req = _with_definition(model='p', profile_store_dir='/tmp/x')
++    with a, b, c, pytest.raises(service.CustomerGatewayLaunchError, match='custom'):
++        await customer_gateway_hooks.bind_start_request(req, sb, 'gui')
++
++
++@pytest.mark.usefixtures('remote_runtime')
++async def test_definition_profile_name_kept_and_definition_condenser_bound(monkeypatch):
++    _on(monkeypatch)
++    sb = _sandbox()
++    cond = LLMSummarizingCondenser(
++        llm=LLM(
++            model='litellm_proxy/deepseek',
++            base_url='http://litellm:4000',
++            api_key=SecretStr('managed'),
++            usage_id='def-cond',
++        )
++    )
++    a, b, c = _on_store(_gw(sb.credential_org_id))
++    with a, b, c:
++        out = await customer_gateway_hooks.bind_start_request(
++            _with_definition(model='p', condenser=cond), sb, 'gui'
++        )
++    d = out.agent_definitions[0]
++    assert d.model == 'p' and d.condenser.llm.base_url == RELAY
++
++
++async def test_refresh_hook_registered_for_bound_and_switched_llms_only(monkeypatch):
++    """Real SDK 1.62 registration using the env our sandbox hook produces. A switch installs
++    a new agent and the agent server re-runs this registration (event_service callback)."""
++    from openhands.agent_server.managed_llm_key import (
++        register_managed_llm_key_refresh,
++    )
++
++    _on(monkeypatch)
++    sb = _sandbox()
++    base = {'OH_LLM_API_KEY_REFRESH_HEADERS': json.dumps({'X-Session-API-Key': 's'})}
++    gw = _gw(sb.credential_org_id)
++    with patch.object(
++        service.CustomerGatewayStore,
++        'get_enabled_org_gateway',
++        AsyncMock(return_value=gw),
++    ):
++        env = await customer_gateway_hooks.sandbox_environment(
++            sb.credential_org_id, base
++        )
++    for k, v in env.items():
++        monkeypatch.setenv(k, v)
++    bound = service.bind_llm(_request().agent.llm, PROFILE, RELAY, 't')
++    assert register_managed_llm_key_refresh(Agent(llm=bound)) == 1
++    switched = service.bind_llm(
++        LLM(model='litellm_proxy/deepseek', usage_id='switched'), PROFILE, RELAY, 't'
++    )
++    assert register_managed_llm_key_refresh(Agent(llm=switched)) == 1
++    managed = _request().agent.model_copy(update={'condenser': None})
++    assert register_managed_llm_key_refresh(managed) == 0
++
++
++async def test_resume_route_returns_409_not_500_for_pre_gateway_sandbox(monkeypatch):
++    """Real sandbox router + real RemoteSandboxService.resume_sandbox; only the stored
++    sandbox row lookup is injected. The runtime API is never reached."""
++    import httpx
++    from fastapi import FastAPI
++
++    from openhands.app_server.sandbox import sandbox_router
++
++    _on(monkeypatch)
++    org = uuid4()
++    gw = _gw(org)
++    stored = SimpleNamespace(
++        credential_org_id=org, created_at=gw.enabled_since - timedelta(days=1)
++    )
++    svc = object.__new__(RemoteSandboxService)
++    runtime = AsyncMock(side_effect=AssertionError('runtime must not be called'))
++    app = FastAPI()
++    app.include_router(sandbox_router.router)
++    app.dependency_overrides[sandbox_router.sandbox_service_dependency.dependency] = (
++        lambda: svc
++    )
++    app.dependency_overrides[sandbox_router.user_context_dependency.dependency] = (
++        lambda: SimpleNamespace()
++    )
++    app.dependency_overrides[sandbox_router.db_session_dependency.dependency] = (
++        lambda: SimpleNamespace(commit=AsyncMock())
++    )
++    with (
++        patch.object(
++            service.CustomerGatewayStore,
++            'get_enabled_org_gateway',
++            AsyncMock(return_value=gw),
++        ),
++        patch.object(
++            RemoteSandboxService,
++            '_get_stored_sandbox',
++            AsyncMock(return_value=stored),
++        ),
++        patch.object(RemoteSandboxService, '_get_runtime_for_resume', runtime),
++    ):
++        route = next(
++            r for r in app.routes if getattr(r, 'name', '') == 'resume_sandbox'
++        )
++        path = route.path.replace('{sandbox_id}', 'sb1')
++        async with httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=app), base_url='http://t'
++        ) as c:
++            r = await c.request(next(iter(route.methods)), path)
++    assert r.status_code == 409
++    assert 'predates the customer gateway' in r.json()['detail']
++    runtime.assert_not_called()
++
++
++async def test_off_start_title_does_no_credential_org_lookup(monkeypatch):
++    from openhands.app_server.app_conversation.live_status_app_conversation_service import (
++        LiveStatusAppConversationService,
++    )
++    from openhands.app_server.sandbox import sandbox_store
++
++    monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
++    lookup = AsyncMock(side_effect=AssertionError('OFF must not resolve the org'))
++    svc = object.__new__(LiveStatusAppConversationService)
++    svc.user_context = SimpleNamespace()
++    with patch.object(sandbox_store, 'get_credential_org_id', lookup):
++        await svc._start_title_llm(
++            SimpleNamespace(agent_settings=None, llm_profiles=None),
++            SimpleNamespace(llm_model=None),
++        )
++    lookup.assert_not_called()
+diff --git a/tests/unit/storage/test_customer_gateway_settings_save.py b/tests/unit/storage/test_customer_gateway_settings_save.py
+new file mode 100644
+index 0000000..ff70ad6
+--- /dev/null
++++ b/tests/unit/storage/test_customer_gateway_settings_save.py
+@@ -0,0 +1,166 @@
++"""Ordinary settings saves in a customer-gateway org leave legacy member keys and the gateway
++mapping untouched (PostgreSQL). Raw customer keys change only through the operator store/CLI."""
++
++from unittest.mock import AsyncMock, patch
++
++import pytest
++from fastapi import HTTPException
++from sqlalchemy import select
++
++from storage.customer_gateway import CustomerGatewayMemberCredential
++from storage.customer_gateway_store import CustomerGatewayStore
++from storage.org_member import OrgMember
++from storage.saas_settings_store import SaasSettingsStore
++from tests.unit.test_saas_settings_store import (  # noqa: F401
++    _make_settings,
++    org_with_multiple_members_fixture,
++)
++
++PROFILE = {
++    'base_url': 'https://gw.customer.example/v1',
++    'models': {'deepseek': 'deepseek/chat'},
++}
++BYOR = dict(model='anthropic/claude-sonnet-4', base_url='https://api.anthropic.com/v1')
++
++
++@pytest.fixture
++def gateway_org(org_with_multiple_members_fixture, async_session_maker, monkeypatch):  # noqa: F811
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
++    monkeypatch.setenv(
++        'CUSTOMER_GATEWAY_RELAY_URL', 'https://app/api/customer-gateway/v1'
++    )
++    monkeypatch.setenv(
++        'CUSTOMER_GATEWAY_TOKEN_URL', 'https://app/api/customer-gateway/token'
++    )
++    with (
++        patch('storage.customer_gateway_store.a_session_maker', async_session_maker),
++        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
++    ):
++        yield org_with_multiple_members_fixture
++
++
++async def _snapshot(session_maker, org_id):
++    with session_maker() as s:
++        members = {
++            m.user_id: m._llm_api_key
++            for m in s.execute(select(OrgMember).where(OrgMember.org_id == org_id))
++            .scalars()
++            .all()
++        }
++        creds = {
++            c.user_id: (c.ciphertext, c.credential_version, c.policy_version)
++            for c in s.execute(select(CustomerGatewayMemberCredential)).scalars().all()
++        }
++    return members, creds
++
++
++async def _seed(fx):
++    org_id = fx['org_id']
++    await CustomerGatewayStore.set_org_gateway(org_id, 'gw', PROFILE, True, 'op')
++    await CustomerGatewayStore.set_member_credential(
++        org_id, fx['member1_user_id'], 'sk-member-a-0123456789', ['deepseek'], 'op'
++    )
++    await CustomerGatewayStore.set_member_credential(
++        org_id, fx['member2_user_id'], 'sk-member-b-9876543210', ['deepseek'], 'op'
++    )
++
++
++async def test_on_preference_save_leaves_legacy_keys_and_mapping(
++    gateway_org, session_maker
++):
++    fx = gateway_org
++    await _seed(fx)
++    before = await _snapshot(session_maker, fx['org_id'])
++    store = SaasSettingsStore(str(fx['admin_user_id']))
++    await store.store(
++        _make_settings(**BYOR, api_key='admin-initial-key', language='fr')
++    )
++    await store.store(_make_settings(**BYOR, language='de'))
++    assert await _snapshot(session_maker, fx['org_id']) == before
++
++
++@pytest.mark.parametrize(
++    'entered', ['sk-entered-by-admin-000', 'eyJhbGciOiJIUzI1NiJ9.inference.bearer']
++)
++async def test_on_llm_key_change_refused_and_nothing_written(
++    gateway_org, session_maker, entered
++):
++    fx = gateway_org
++    await _seed(fx)
++    before = await _snapshot(session_maker, fx['org_id'])
++    store = SaasSettingsStore(str(fx['admin_user_id']))
++    with pytest.raises(HTTPException) as exc:
++        await store.store(_make_settings(**BYOR, api_key=entered))
++    assert exc.value.status_code == 409
++    assert await _snapshot(session_maker, fx['org_id']) == before
++
++
++async def test_operator_store_is_the_only_raw_key_path(gateway_org, session_maker):
++    fx = gateway_org
++    await _seed(fx)
++    members_before, creds_before = await _snapshot(session_maker, fx['org_id'])
++    await CustomerGatewayStore.set_member_credential(
++        fx['org_id'],
++        fx['member1_user_id'],
++        'sk-member-a-rotated-0000',
++        ['deepseek'],
++        'op',
++    )
++    members_after, creds_after = await _snapshot(session_maker, fx['org_id'])
++    assert members_after == members_before
++    a = fx['member1_user_id']
++    assert creds_after[a][1] == creds_before[a][1] + 1
++    assert creds_after[a][2] == creds_before[a][2]
++    assert creds_after[fx['member2_user_id']] == creds_before[fx['member2_user_id']]
++
++
++async def test_off_save_keeps_existing_fan_out(
++    org_with_multiple_members_fixture,  # noqa: F811
++    async_session_maker,
++    session_maker,
++    monkeypatch,  # noqa: F811
++):
++    monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
++    fx = org_with_multiple_members_fixture
++    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
++        await SaasSettingsStore(str(fx['admin_user_id'])).store(
++            _make_settings(**BYOR, api_key='shared-key-v9')
++        )
++    members, _ = await _snapshot(session_maker, fx['org_id'])
++    assert {fx['decrypt_value'](v) for v in members.values()} == {'shared-key-v9'}
++
++
++MANAGED = dict(model='openhands/claude-sonnet-4-5-20250929')
++
++
++async def test_on_save_never_reaches_managed_key_provisioning(
++    gateway_org, session_maker
++):
++    fx = gateway_org
++    await _seed(fx)
++    before = await _snapshot(session_maker, fx['org_id'])
++    ensure = AsyncMock(side_effect=AssertionError('managed provisioning while ON'))
++    with patch.object(SaasSettingsStore, '_ensure_api_key', ensure):
++        await SaasSettingsStore(str(fx['admin_user_id'])).store(
++            _make_settings(**MANAGED, language='fr')
++        )
++    ensure.assert_not_called()
++    assert await _snapshot(session_maker, fx['org_id']) == before
++
++
++async def test_off_save_still_provisions_managed_key(
++    org_with_multiple_members_fixture,  # noqa: F811
++    async_session_maker,
++    monkeypatch,
++):
++    monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
++    fx = org_with_multiple_members_fixture
++    ensure = AsyncMock()
++    with (
++        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
++        patch.object(SaasSettingsStore, '_ensure_api_key', ensure),
++    ):
++        await SaasSettingsStore(str(fx['admin_user_id'])).store(
++            _make_settings(**MANAGED)
++        )
++    ensure.assert_called_once()
+diff --git a/tests/unit/storage/test_customer_gateway_store.py b/tests/unit/storage/test_customer_gateway_store.py
+new file mode 100644
+index 0000000..b165869
+--- /dev/null
++++ b/tests/unit/storage/test_customer_gateway_store.py
+@@ -0,0 +1,358 @@
++"""CustomerGatewayStore on PostgreSQL (shared fixtures; migration 216 applied via template)."""
++
++from datetime import timedelta
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++from uuid import UUID, uuid4
++
++import pytest
++from pydantic import SecretStr
++from sqlalchemy import select, text
++from sqlalchemy.exc import IntegrityError
++
++from openhands.app_server.services.jwt_service import JwtService
++from openhands.app_server.utils.encryption_key import EncryptionKey
++from storage.customer_gateway import CustomerGatewayMemberCredential
++from storage.customer_gateway_store import CustomerGatewayDenied, CustomerGatewayStore
++from storage.org_member import OrgMember
++from storage.role import Role
++
++ORG_ID = UUID('d4444444-4444-4444-4444-444444444444')
++SUSAN = UUID('d5555555-5555-5555-5555-555555555555')
++DAVID = UUID('d6666666-6666-6666-6666-666666666666')
++KEY_1, KEY_2, KEY_D = (
++    'sk-susan-one-0123456789',
++    'sk-susan-two-9876543210',
++    'sk-david-0000000000',
++)
++PROFILE = {
++    'base_url': 'https://gw.customer.example/v1',
++    'models': {'deepseek': 'deepseek/chat'},
++}
++
++
++@pytest.fixture
++def store(async_session_maker, session_maker, create_org, create_user):
++    create_org(id=ORG_ID)
++    with session_maker() as session:
++        role = Role(name=f'member-{uuid4().hex[:8]}', rank=3)
++        session.add(role)
++        session.flush()
++        for uid in (SUSAN, DAVID):
++            create_user(id=uid, current_org_id=ORG_ID)
++            session.add(
++                OrgMember(
++                    org_id=ORG_ID,
++                    user_id=uid,
++                    role_id=role.id,
++                    llm_api_key='k',
++                    status='active',
++                )
++            )
++        session.commit()
++    jwt = JwtService(
++        keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++    )
++    with (
++        patch('storage.customer_gateway_store.a_session_maker', async_session_maker),
++        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt),
++    ):
++        yield CustomerGatewayStore
++
++
++async def test_org_gateway_default_off_and_toggle(store):
++    assert await store.get_enabled_org_gateway(ORG_ID) is None
++    await store.set_org_gateway(ORG_ID, 'litellm', PROFILE, True, 'op')
++    assert (await store.get_enabled_org_gateway(ORG_ID)).gateway_id == 'litellm'
++    await store.set_org_gateway(ORG_ID, 'litellm', PROFILE, False, 'op')
++    assert await store.get_enabled_org_gateway(ORG_ID) is None
++
++
++async def test_rotation_keeps_identity_and_policy_version(store, async_session_maker):
++    assert (
++        await store.set_member_credential(
++            ORG_ID, SUSAN, KEY_1, ['deepseek', 'sonnet'], 'op'
++        )
++        == 1
++    )
++    pv = await store.current_policy_version(ORG_ID, SUSAN)
++    assert (
++        await store.set_member_credential(
++            ORG_ID, SUSAN, KEY_2, ['deepseek', 'sonnet'], 'op'
++        )
++        == 2
++    )
++    res = await store.resolve(ORG_ID, SUSAN, pv)
++    assert (
++        res.upstream_key == KEY_2
++        and res.credential_version == 2
++        and res.allowed_models == {'deepseek', 'sonnet'}
++    )
++    async with async_session_maker() as s:
++        rows = (
++            (await s.execute(select(CustomerGatewayMemberCredential))).scalars().all()
++        )
++        raw = (
++            (
++                await s.execute(
++                    text('select ciphertext from customer_gateway_member_credential')
++                )
++            )
++            .scalars()
++            .all()
++        )
++    assert len(rows) == 1 and all(KEY_1 not in c and KEY_2 not in c for c in raw)
++
++
++async def test_members_are_isolated(store):
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    await store.set_member_credential(ORG_ID, DAVID, KEY_D, ['deepseek'], 'op')
++    assert (await store.resolve(ORG_ID, DAVID, 1)).upstream_key == KEY_D
++    assert (await store.resolve(ORG_ID, SUSAN, 1)).upstream_key == KEY_1
++
++
++async def test_masked_status_has_no_key_material(store):
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    out = await store.masked_status(ORG_ID)
++    assert len(out) == 1 and KEY_1 not in repr(out) and 'ciphertext' not in out[0]
++
++
++async def test_disable_revokes_outstanding_tokens(store):
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    pv = await store.current_policy_version(ORG_ID, SUSAN)
++    new_pv = await store.set_member_enabled(ORG_ID, SUSAN, False, 'op')
++    assert new_pv == pv + 1
++    with pytest.raises(CustomerGatewayDenied, match='credential_disabled'):
++        await store.resolve(ORG_ID, SUSAN, pv)
++    await store.set_member_enabled(ORG_ID, SUSAN, True, 'op')
++    with pytest.raises(CustomerGatewayDenied, match='token_revoked'):
++        await store.resolve(ORG_ID, SUSAN, pv)
++
++
++async def test_inactive_member_denied_and_unknown_member(store, session_maker):
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    with session_maker() as s:
++        s.execute(
++            text("update org_member set status='inactive' where user_id=:u"),
++            {'u': SUSAN},
++        )
++        s.commit()
++    with pytest.raises(CustomerGatewayDenied, match='membership_inactive'):
++        await store.resolve(ORG_ID, SUSAN, 1)
++    with pytest.raises(CustomerGatewayDenied, match='no_credential'):
++        await store.resolve(ORG_ID, DAVID, 1)
++    with pytest.raises(CustomerGatewayDenied):
++        await store.set_member_enabled(ORG_ID, DAVID, False, 'op')
++
++
++async def test_credential_requires_membership(
++    store, async_session_maker, create_org, create_user
++):
++    # Unknown user, and a real user who is not a member of this org: explicit denial.
++    with pytest.raises(CustomerGatewayDenied, match='not_a_member'):
++        await store.set_member_credential(ORG_ID, uuid4(), KEY_1, ['deepseek'], 'op')
++    other_org, outsider = uuid4(), uuid4()
++    create_org(id=other_org)
++    create_user(id=outsider, current_org_id=other_org)
++    with pytest.raises(CustomerGatewayDenied, match='not_a_member'):
++        await store.set_member_credential(ORG_ID, outsider, KEY_1, ['deepseek'], 'op')
++    # The database guard is unchanged: a direct insert for a non-member still fails.
++    async with async_session_maker() as session:
++        session.add(
++            CustomerGatewayMemberCredential(
++                org_id=ORG_ID,
++                user_id=outsider,
++                ciphertext='x',
++                fingerprint='fp',
++                allowed_models=[],
++                updated_by='op',
++            )
++        )
++        with pytest.raises(IntegrityError):
++            await session.commit()
++
++
++async def test_empty_key_rejected(store):
++    with pytest.raises(ValueError):
++        await store.set_member_credential(ORG_ID, SUSAN, '  ', ['deepseek'], 'op')
++
++
++@pytest.mark.parametrize(
++    'member_status,allowed',
++    [
++        ('active', True),
++        (None, True),
++        ('inactive', False),
++        ('invited', False),
++        ('disabled', False),
++    ],
++)
++async def test_native_membership_states(store, session_maker, member_status, allowed):
++    """NULL is legacy active (OrgMemberStore.add_user_to_org defaults status to None)."""
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    with session_maker() as s:
++        s.execute(
++            text('update org_member set status=:st where user_id=:u'),
++            {'st': member_status, 'u': SUSAN},
++        )
++        s.commit()
++    if allowed:
++        assert (await store.resolve(ORG_ID, SUSAN, 1)).upstream_key == KEY_1
++    else:
++        with pytest.raises(CustomerGatewayDenied, match='membership_inactive'):
++            await store.current_policy_version(ORG_ID, SUSAN)
++
++
++async def test_member_removal_cascades_credential(store, session_maker):
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    with session_maker() as s:
++        s.execute(text('delete from org_member where user_id=:u'), {'u': SUSAN})
++        s.commit()
++    with pytest.raises(CustomerGatewayDenied, match='no_credential'):
++        await store.resolve(ORG_ID, SUSAN, 1)
++
++
++async def test_service_account_cannot_be_provisioned_or_resolved(
++    store, session_maker, create_user
++):
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    with session_maker() as s:
++        s.execute(
++            text('update "user" set account_type=\'service\' where id=:u'), {'u': SUSAN}
++        )
++        s.commit()
++    with pytest.raises(CustomerGatewayDenied, match='service_account'):
++        await store.resolve(ORG_ID, SUSAN, 1)
++    with pytest.raises(CustomerGatewayDenied, match='service_account'):
++        await store.current_policy_version(ORG_ID, SUSAN)
++    with pytest.raises(CustomerGatewayDenied, match='service_account'):
++        await store.set_member_credential(ORG_ID, SUSAN, KEY_2, ['deepseek'], 'op')
++
++
++async def test_native_api_key_bearer_route_rejects_inference_token(
++    store, async_session_maker
++):
++    """The real SaaS bearer authenticator (PG ApiKeyStore) accepts the member's own API key
++    and rejects the same member's inference token."""
++    from starlette.requests import Request
++
++    from server.auth.saas_user_auth import saas_user_auth_from_bearer
++    from server.customer_gateway.tokens import mint_inference_token
++    from storage.api_key_store import ApiKeyStore
++
++    jwt = JwtService(
++        keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++    )
++    inference = mint_inference_token(
++        jwt,
++        user_id=str(SUSAN),
++        org_id=str(ORG_ID),
++        sandbox_id='sb1',
++        gateway_id='litellm',
++        policy_version=1,
++        ttl=timedelta(minutes=5),
++    )
++
++    def request(token: str) -> Request:
++        return Request(
++            {
++                'type': 'http',
++                'method': 'GET',
++                'path': '/api/v1/users/me',
++                'headers': [(b'authorization', f'Bearer {token}'.encode())],
++            }
++        )
++
++    with (
++        patch('storage.api_key_store.a_session_maker', async_session_maker),
++        patch(
++            'server.auth.saas_user_auth._require_active_user',
++            AsyncMock(return_value=SimpleNamespace(account_type='human')),
++        ),
++    ):
++        api_key = await ApiKeyStore.get_instance().create_api_key(
++            str(SUSAN), org_id=ORG_ID
++        )
++        accepted = await saas_user_auth_from_bearer(request(api_key))
++        assert accepted is not None and accepted.user_id == str(SUSAN)
++        assert await saas_user_auth_from_bearer(request(inference)) is None
++
++
++@pytest.mark.parametrize('column', ['is_disabled', 'deletion_pending'])
++async def test_inactive_user_denied_immediately_for_existing_token_and_new_mint(
++    store, session_maker, monkeypatch, column
++):
++    """Matches saas_user_auth._require_active_user: an already-issued inference token stops
++    working on its next relay request (no TTL wait), and no new token can be minted."""
++    from starlette.requests import Request
++
++    from server.customer_gateway import service
++
++    monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
++    monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'https://app/v1')
++    monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_URL', 'https://app/token')
++    jwt = JwtService(
++        keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
++    )
++    await store.set_org_gateway(ORG_ID, 'gw', PROFILE, True, 'op')
++    await store.set_member_credential(ORG_ID, SUSAN, KEY_1, ['deepseek'], 'op')
++    sandbox = SimpleNamespace(
++        id='sb1',
++        created_by_user_id=str(SUSAN),
++        credential_org_id=ORG_ID,
++        status=service.SandboxStatus.RUNNING,
++    )
++    gw = await store.get_enabled_org_gateway(ORG_ID)
++
++    def request(token: str) -> Request:
++        return Request(
++            {
++                'type': 'http',
++                'method': 'POST',
++                'path': '/v1/chat/completions',
++                'headers': [(b'authorization', f'Bearer {token}'.encode())],
++            }
++        )
++
++    with (
++        patch.object(service, '_jwt', return_value=jwt),
++        patch.object(service, 'get_sandbox', AsyncMock(return_value=sandbox)),
++    ):
++        token = await service.mint_for_sandbox(sandbox, gw)
++        _, _, res = await service.authorize_inference(request(token))
++        assert res.upstream_key == KEY_1
++
++        with session_maker() as s:
++            s.execute(
++                text(f'update "user" set {column}=true where id=:u'), {'u': SUSAN}
++            )
++            s.commit()
++
++        with pytest.raises(CustomerGatewayDenied, match='user_inactive'):
++            await service.authorize_inference(request(token))
++        with pytest.raises(CustomerGatewayDenied, match='user_inactive'):
++            await service.mint_for_sandbox(sandbox, gw)
++        with pytest.raises(CustomerGatewayDenied, match='user_inactive'):
++            await store.set_member_credential(ORG_ID, SUSAN, KEY_2, ['deepseek'], 'op')
++        # David (another member) is unaffected.
++        await store.set_member_credential(ORG_ID, DAVID, KEY_D, ['deepseek'], 'op')
++        assert (await store.resolve(ORG_ID, DAVID, 1)).upstream_key == KEY_D
++
++
++async def test_enabled_since_moves_only_on_off_to_on(store, session_maker):
++    await store.set_org_gateway(ORG_ID, 'gw', PROFILE, True, 'op')
++    first = (await store.get_enabled_org_gateway(ORG_ID)).enabled_since
++    assert first is not None
++    edited = {**PROFILE, 'models': {**PROFILE['models'], 'sonnet': 'anthropic/sonnet'}}
++    await store.set_org_gateway(ORG_ID, 'gw', edited, True, 'op')
++    assert (await store.get_enabled_org_gateway(ORG_ID)).enabled_since == first
++    await store.set_org_gateway(ORG_ID, 'gw', edited, False, 'op')
++    with session_maker() as s:
++        assert (
++            s.execute(
++                text('select enabled_since from customer_gateway_org_config')
++            ).scalar_one()
++            is None
++        )
++    await store.set_org_gateway(ORG_ID, 'gw', edited, True, 'op')
++    assert (await store.get_enabled_org_gateway(ORG_ID)).enabled_since > first
+diff --git a/tests/unit/test_migration_216_customer_gateway_retained.py b/tests/unit/test_migration_216_customer_gateway_retained.py
+new file mode 100644
+index 0000000..f09a678
+--- /dev/null
++++ b/tests/unit/test_migration_216_customer_gateway_retained.py
+@@ -0,0 +1,113 @@
++"""Real-DB tests for migration 216: rollback is non-destructive and re-upgrade is idempotent."""
++
++from __future__ import annotations
++
++from uuid import UUID, uuid4
++
++from sqlalchemy import text
++from sqlalchemy.engine import Engine
++
++from storage.customer_gateway import (
++    CustomerGatewayMemberCredential,
++    CustomerGatewayOrgConfig,
++)
++from storage.org_member import OrgMember
++from storage.role import Role
++from tests import postgres_testdb
++
++
++def _seed(session_maker, create_org, create_user) -> tuple[UUID, UUID]:
++    """Rows built through the real ORM models and shared fixtures, so every NOT NULL
++    column gets its repo default (raw SQL would miss Python-side defaults)."""
++    org = create_org().id
++    user = create_user(current_org_id=org).id
++    with session_maker() as session:
++        role = Role(name=f'member-{uuid4().hex[:8]}', rank=3)
++        session.add(role)
++        session.flush()
++        session.add(
++            OrgMember(
++                org_id=org,
++                user_id=user,
++                role_id=role.id,
++                llm_api_key='k',
++                status='active',
++            )
++        )
++        session.flush()
++        session.add(
++            CustomerGatewayOrgConfig(
++                org_id=org,
++                gateway_id='gw',
++                enabled=True,
++                profile={'base_url': 'https://gw/v1', 'models': {}},
++                updated_by='op',
++            )
++        )
++        session.add(
++            CustomerGatewayMemberCredential(
++                org_id=org,
++                user_id=user,
++                ciphertext='CIPHERTEXT-CANARY',
++                fingerprint='fp',
++                allowed_models=[],
++                updated_by='op',
++            )
++        )
++        session.commit()
++    return org, user
++
++
++def _ciphertexts(engine: Engine) -> list[str]:
++    with engine.connect() as c:
++        return list(
++            c.execute(
++                text('SELECT ciphertext FROM customer_gateway_member_credential')
++            ).scalars()
++        )
++
++
++def test_downgrade_retains_tables_and_reupgrade_is_idempotent(
++    engine: Engine,
++    test_database: postgres_testdb.TestDatabase,
++    session_maker,
++    create_org,
++    create_user,
++):
++    _seed(session_maker, create_org, create_user)
++    postgres_testdb.run_alembic(
++        test_database.server, test_database.name, 'downgrade', '215'
++    )
++    assert _ciphertexts(engine) == ['CIPHERTEXT-CANARY']
++    postgres_testdb.run_alembic(
++        test_database.server, test_database.name, 'upgrade', '216'
++    )
++    assert _ciphertexts(engine) == ['CIPHERTEXT-CANARY']
++    with engine.connect() as c:
++        assert (
++            c.execute(text('SELECT version_num FROM alembic_version')).scalar_one()
++            == '216'
++        )
++
++
++def test_org_delete_cascades_gateway_rows(
++    engine: Engine, session_maker, create_org, create_user
++):
++    org, _ = _seed(session_maker, create_org, create_user)
++    with engine.begin() as c:
++        c.execute(text('DELETE FROM org_member WHERE org_id = :o'), {'o': org})
++        c.execute(text('DELETE FROM "user" WHERE current_org_id = :o'), {'o': org})
++        c.execute(text('DELETE FROM org WHERE id = :o'), {'o': org})
++    with engine.connect() as c:
++        assert (
++            c.execute(
++                text('SELECT count(*) FROM customer_gateway_org_config')
++            ).scalar_one()
++            == 0
++        )
++        assert (
++            c.execute(
++                text('SELECT count(*) FROM customer_gateway_member_credential')
++            ).scalar_one()
++            == 0
++        )

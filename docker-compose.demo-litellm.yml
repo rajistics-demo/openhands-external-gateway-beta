@@ -1,0 +1,76 @@
+# OPTIONAL demo-only overlay: a separate, customer-shaped LiteLLM instance plus its own
+# Postgres and a deterministic provider fixture, standing in for a customer's *real* LiteLLM
+# so this evaluation package is runnable without any customer infrastructure.
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.customer-gateway.yml \
+#     -f docker-compose.demo-litellm.yml \
+#     up -d
+#
+# This is a demonstration fixture, not the product. The Enterprise app/worker never hold
+# this LiteLLM's master key; the app only ever receives per-member personal virtual keys
+# through the operator CLI (see cli/README.md). This compose file does not change
+# docker-compose.yml or docker-compose.customer-gateway.yml.
+#
+# Swap this whole file for the customer's own externally-reachable LiteLLM by instead
+# pointing CUSTOMER_GATEWAY_RELAY_URL at their endpoint; nothing else in this package
+# needs to change.
+
+services:
+  demo-litellm-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DEMO_LITELLM_DB_USER:-demolitellm}
+      POSTGRES_PASSWORD: ${DEMO_LITELLM_DB_PASS:-demolitellm}
+      POSTGRES_DB: ${DEMO_LITELLM_DB_NAME:-demolitellm}
+    volumes:
+      - demo-litellm-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DEMO_LITELLM_DB_USER:-demolitellm}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Deterministic OpenAI-compatible stub standing in for real model providers. It is
+  # reached ONLY by demo-litellm, never by the Enterprise app/sandbox directly.
+  demo-provider-stub:
+    build:
+      context: ./demo-fixture
+      dockerfile: Dockerfile.provider-stub
+    expose:
+      - '9100'
+    restart: unless-stopped
+
+  demo-litellm:
+    image: ${DEMO_LITELLM_IMAGE:-ghcr.io/berriai/litellm:1.103.6}
+    command: ['--config', '/app/config.yaml', '--port', '4000', '--num_workers', '1']
+    environment:
+      DATABASE_URL: postgresql://${DEMO_LITELLM_DB_USER:-demolitellm}:${DEMO_LITELLM_DB_PASS:-demolitellm}@demo-litellm-db:5432/${DEMO_LITELLM_DB_NAME:-demolitellm}
+      LITELLM_MASTER_KEY: ${DEMO_LITELLM_MASTER_KEY:?Set DEMO_LITELLM_MASTER_KEY in .env (demo fixture tooling only; the app never receives it)}
+      LITELLM_SALT_KEY: ${DEMO_LITELLM_SALT_KEY:?Set DEMO_LITELLM_SALT_KEY in .env}
+      PROVIDER_BASE_URL: http://demo-provider-stub:9100
+      STORE_MODEL_IN_DB: 'False'
+      LITELLM_LOG: ERROR
+    volumes:
+      - ./demo-fixture/litellm-customer.yaml:/app/config.yaml:ro
+    ports:
+      # Exposed on the host so the customer's admin/spend UI tooling and the seed-key
+      # fixture script can reach it directly, mirroring a real external gateway.
+      - '${DEMO_LITELLM_HOST_PORT:-4000}:4000'
+    depends_on:
+      demo-litellm-db:
+        condition: service_healthy
+      demo-provider-stub:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  demo-litellm-db-data:

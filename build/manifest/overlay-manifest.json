@@ -1,0 +1,143 @@
+{
+ "base_commit": "7647eab7b963a5ed0a564215c082dd66331b79a6",
+ "files": [
+  {
+   "path": "migrations/versions/216_add_customer_gateway_tables.py",
+   "key": "f000.py",
+   "base_sha256": null,
+   "overlay_sha256": "417662a809f473d58b9e78f9c0730c5d790d3b679c6f663f20d1bf8b91f12c09"
+  },
+  {
+   "path": "openhands/app_server/app_conversation/app_conversation_router.py",
+   "key": "f001.py",
+   "base_sha256": "afcf68c373b4a2beb3391bb708afd9bb75635a94021dd94db4588b373fd78c37",
+   "overlay_sha256": "1f39a0bfb7ee64dc130e7ec0d42626790f8d6223bf60690000ff40d17a002cf5"
+  },
+  {
+   "path": "openhands/app_server/app_conversation/live_status_app_conversation_service.py",
+   "key": "f002.py",
+   "base_sha256": "9f4f1596af1aafbce3548163a160f960e297e5886b535e69520c07f5dd3374dd",
+   "overlay_sha256": "f76d620c98cb4c15a69a3ed55e739ea697b7bb8655e6894010832cfd4f9e31ee"
+  },
+  {
+   "path": "openhands/app_server/sandbox/docker_sandbox_service.py",
+   "key": "f003.py",
+   "base_sha256": "00953ee17f6efcdcb1b3e2f60a0870700bea3c3153073596458d7bb0dbba8bc2",
+   "overlay_sha256": "62f86fc3f13b7e0987a57615ba2fdfa470aecc32d292b92a574af3ce0b975ac5"
+  },
+  {
+   "path": "openhands/app_server/sandbox/managed_sandbox_service.py",
+   "key": "f004.py",
+   "base_sha256": "c1286e09bb2404a3173638d39722b2f6413b529866093d791a4446be77809e10",
+   "overlay_sha256": "7f54b4014cd7f1353aaa97a60fb51f0990b99ab69e43db67f3a15a21b9974874"
+  },
+  {
+   "path": "openhands/app_server/sandbox/remote_sandbox_service.py",
+   "key": "f005.py",
+   "base_sha256": "d239ec43a1f073499b1b52cef1548d49ed9798a5da001ba1ad66e8e7e90e41bd",
+   "overlay_sha256": "42c69cee024b381ab9d06b20ec0f434b730ac197a37fd63ed7f4cf373f75d69a"
+  },
+  {
+   "path": "openhands/app_server/services/jwt_service.py",
+   "key": "f006.py",
+   "base_sha256": "5c62817f5ae881400b5ae42812773cbc0fb05c4c2962fc5eb02cd84f18b57ada",
+   "overlay_sha256": "250bc951f4fdfd15abc54b964e66d0fda17c041863059233bbf201f418766b8b"
+  },
+  {
+   "path": "openhands/app_server/user/user_router.py",
+   "key": "f007.py",
+   "base_sha256": "1cd47245883301b92e45c602be2c81b7b858ea5b48933d7b547f568a53ba8c46",
+   "overlay_sha256": "991dad79115b8040357d4f0c8b2a0a1aa22266c89bad4e5314f8dad14c18c4f2"
+  },
+  {
+   "path": "openhands/app_server/utils/customer_gateway_hooks.py",
+   "key": "f008.py",
+   "base_sha256": null,
+   "overlay_sha256": "942a127d8ad1a98d20c77909ce598b74f1b512f5f55695fbfc66ec11f61685ae"
+  },
+  {
+   "path": "saas_server.py",
+   "key": "f009.py",
+   "base_sha256": "e102db9da8543cfb5bbdce27b534c58be6542ae5491a122f31378928dfbe69c6",
+   "overlay_sha256": "c412d1db2dcf31e44ac43eaf14d9b51d87fb6755c0748f1d40418a4f5c1fa37b"
+  },
+  {
+   "path": "server/customer_gateway/__init__.py",
+   "key": "f010.py",
+   "base_sha256": null,
+   "overlay_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "server/customer_gateway/cli.py",
+   "key": "f011.py",
+   "base_sha256": null,
+   "overlay_sha256": "e25e538c97ae43841720ef2e945b828a263841b963768fac4c7d02a085fc4070"
+  },
+  {
+   "path": "server/customer_gateway/config.py",
+   "key": "f012.py",
+   "base_sha256": null,
+   "overlay_sha256": "43963f1c50292718efae9f228554ee2dbfcb6a9c20f0af46473ceef22650fbc2"
+  },
+  {
+   "path": "server/customer_gateway/profile.py",
+   "key": "f013.py",
+   "base_sha256": null,
+   "overlay_sha256": "596a49085b3aed2b206b19a944754c6fbbddeaa0c16fe196fb577f644a88d147"
+  },
+  {
+   "path": "server/customer_gateway/relay.py",
+   "key": "f014.py",
+   "base_sha256": null,
+   "overlay_sha256": "c3eed81bb6d7ade50dbcdabdce4c7250df27330b9117b58238c27e4a755a7bfb"
+  },
+  {
+   "path": "server/customer_gateway/routes.py",
+   "key": "f015.py",
+   "base_sha256": null,
+   "overlay_sha256": "60b6e0deca6f68da16651ba56fe08d0a0c4ce289f486f1ce08954d6e17c97507"
+  },
+  {
+   "path": "server/customer_gateway/service.py",
+   "key": "f016.py",
+   "base_sha256": null,
+   "overlay_sha256": "a5773be67272dfe00eea024cb49055dbcdb76c536ab285c48d686a9772374310"
+  },
+  {
+   "path": "server/customer_gateway/tokens.py",
+   "key": "f017.py",
+   "base_sha256": null,
+   "overlay_sha256": "78ce16561afad9e86af4f13e1d345a41f48326499951dec51fe34806879afc57"
+  },
+  {
+   "path": "server/routes/api_keys.py",
+   "key": "f018.py",
+   "base_sha256": "be6064ad80784d20de215992cbaa5f29e9cb4cc7c1be3d38756eabff4888ecea",
+   "overlay_sha256": "1c9f4978ec3fd12ef69d6f4391f2cd534af0efd61b1358d92db97a72a414d195"
+  },
+  {
+   "path": "server/routes/users_v1.py",
+   "key": "f019.py",
+   "base_sha256": "43d125943f71563e5535e26bbbb51f42e49f7e99232d0f22acb63a4e16601894",
+   "overlay_sha256": "f17373a1cc576173ecca6c4440ac14bfff785678fe4e0d43e2f816c983044a6d"
+  },
+  {
+   "path": "storage/customer_gateway.py",
+   "key": "f020.py",
+   "base_sha256": null,
+   "overlay_sha256": "e888935b0d19c3773b76569102125627805a92aae733d44a8cd864bbb226381e"
+  },
+  {
+   "path": "storage/customer_gateway_store.py",
+   "key": "f021.py",
+   "base_sha256": null,
+   "overlay_sha256": "5a05be640ee0f436df4ae10871c4ea845ddd0820b2ce099df0268faf4dd30b4f"
+  },
+  {
+   "path": "storage/saas_settings_store.py",
+   "key": "f022.py",
+   "base_sha256": "a93dc647d13fa376277a7b995e79c6ec6bdd874da5e904cca5e7b645144c5ea5",
+   "overlay_sha256": "56eb092d1a3ad0c2fbc5670f780969a7fe3ae8d061187ef6da838caa17f9c889"
+  }
+ ]
+}

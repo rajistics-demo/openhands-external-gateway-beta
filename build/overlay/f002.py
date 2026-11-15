@@ -1,0 +1,4725 @@
+import asyncio
+import importlib.metadata
+import io
+import json
+import logging
+import zipfile
+from collections import defaultdict
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, AsyncGenerator, BinaryIO, NamedTuple, Sequence, cast
+from urllib.parse import quote, urlparse
+from uuid import UUID, uuid4
+
+import httpx
+from fastapi import HTTPException, Request, status
+from packaging.version import InvalidVersion, Version
+from pydantic import Field, SecretStr, TypeAdapter
+
+from openhands.agent_server.models import (
+    ConversationInfo,
+    SendMessageRequest,
+    StartConversationRequest,
+    TextContent,
+)
+from openhands.agent_server.utils import utc_now
+from openhands.app_server.acp_providers import validate_acp_provider_surfaced
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+    AdditionalRepositoryRequest,
+    agent_server_runs_hooks_from_project_dir,
+    agent_working_dir,
+    hook_project_dir_setting,
+    loads_repository_hooks,
+    repositories_context,
+)
+from openhands.app_server.app_conversation.app_conversation_info_service import (
+    AppConversationInfoService,
+)
+from openhands.app_server.app_conversation.app_conversation_models import (
+    ACP_SERVER_TAG_KEY,
+    AGENT_PROFILE_ID_TAG_KEY,
+    AGENT_PROFILE_REVISION_TAG_KEY,
+    ARCHIVE_WORKSPACE_PATH_TAG_KEY,
+    AgentType,
+    AppConversation,
+    AppConversationInfo,
+    AppConversationPage,
+    AppConversationSortOrder,
+    AppConversationStartRequest,
+    AppConversationStartTask,
+    AppConversationStartTaskStatus,
+    AppConversationUpdateRequest,
+    ConversationTitleGeneration,
+    ConversationTrigger,
+    PluginSpec,
+    SandboxGroupingStrategy,
+)
+from openhands.app_server.app_conversation.app_conversation_service import (
+    AppConversationService,
+    AppConversationServiceInjector,
+    ConversationExportAlreadyRunning,
+    ConversationExportLockUnavailable,
+    ConversationExportTooLarge,
+)
+from openhands.app_server.app_conversation.app_conversation_service_base import (
+    AppConversationServiceBase,
+    azure_devops_repositories,
+    get_project_dir,
+)
+from openhands.app_server.app_conversation.app_conversation_start_task_service import (
+    AppConversationStartTaskService,
+)
+from openhands.app_server.app_conversation.codex_credential_binding import (
+    CODEX_ACP_SERVER,
+    activate_codex_credential_binding,
+    credential_binding_callback_url,
+    iter_sandbox_conversations,
+    reactivate_sandbox_codex_credential_bindings,
+)
+from openhands.app_server.app_conversation.conversation_links import (
+    get_conversation_ui_url,
+)
+from openhands.app_server.app_conversation.conversation_secret_enricher import (
+    ConversationSecretEnricher,
+)
+from openhands.app_server.app_conversation.hook_loader import (
+    load_hooks_from_agent_server,
+)
+from openhands.app_server.app_conversation.skill_loader import (
+    azure_devops_user_orgs,
+    get_azure_devops_bearer_token,
+)
+from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
+    SQLAppConversationInfoService,
+)
+from openhands.app_server.app_conversation.start_title import (
+    generate_start_title,
+    pending_start_title,
+)
+from openhands.app_server.config import (
+    AppServerConfig,
+    get_event_callback_service,
+    resolve_provider_llm_base_url,
+)
+from openhands.app_server.errors import SandboxError
+from openhands.app_server.event.event_service import EventService
+from openhands.app_server.event_callback.event_callback_models import EventCallback
+from openhands.app_server.event_callback.event_callback_service import (
+    EventCallbackService,
+)
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
+)
+from openhands.app_server.event_callback.set_title_callback_processor import (
+    SetTitleCallbackProcessor,
+)
+from openhands.app_server.event_callback.util import agent_server_error_detail
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
+from openhands.app_server.integrations.service_types import SuggestedTask
+from openhands.app_server.mcp.mcp_secret_references import (
+    mcp_server_secret_references,
+)
+from openhands.app_server.pending_messages.pending_message_service import (
+    PendingMessageService,
+)
+from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
+from openhands.app_server.sandbox.sandbox_models import (
+    AGENT_SERVER,
+    SandboxInfo,
+    SandboxStartedBy,
+    SandboxStatus,
+)
+from openhands.app_server.sandbox.sandbox_service import (
+    AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+    GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
+    SandboxService,
+)
+from openhands.app_server.sandbox.sandbox_spec_service import (
+    SandboxSpecService,
+    is_custom_sandbox_spec,
+)
+from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
+from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    has_real_api_key,
+    resolve_profile_llm,
+)
+from openhands.app_server.settings.marketplace_composition import (
+    resolve_registered_marketplaces,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
+)
+from openhands.app_server.settings.settings_models import (
+    MarketplaceRegistration,
+    grouped_workspace_dir,
+)
+from openhands.app_server.user.auth_user_context import AuthUserContext
+from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user_auth.user_auth import AuthType
+from openhands.app_server.utils import customer_gateway_hooks
+from openhands.app_server.utils.docker_utils import (
+    sandbox_url_for_app_server,
+)
+from openhands.app_server.utils.git import (
+    ensure_valid_git_branch_name,
+    ensure_valid_repository_name,
+)
+from openhands.app_server.utils.import_utils import get_impl
+from openhands.app_server.utils.llm_metadata import (
+    get_llm_metadata,
+    should_set_litellm_extra_body,
+)
+from openhands.app_server.utils.redis_lock import (
+    LockError,
+    RedisLockUnavailable,
+    refresh_lock_periodically,
+    try_acquire_redis_lock,
+)
+from openhands.sdk import Agent, AgentContext, LocalWorkspace, Tool
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
+from openhands.sdk.hooks import HookConfig
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
+from openhands.sdk.marketplace.registration import (
+    MarketplaceRegistration as SDKMarketplaceRegistration,
+)
+from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.plugin import PluginSource
+from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
+from openhands.sdk.settings import (
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
+from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import ClientToolSpec
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    launch_tool_specs,
+    resolve_tool_specs,
+    selects_tool,
+)
+from openhands.sdk.utils.redact import (
+    redact_api_key_literals,
+    redact_text_secrets,
+    sanitize_config,
+)
+from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
+from openhands.tools.preset.default import register_builtins_agents
+from openhands.tools.preset.planning import (
+    format_plan_structure,
+    get_planning_tools,
+)
+
+_conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
+    TypeAdapter(list[ConversationInfo | None])
+)
+_logger = logging.getLogger(__name__)
+
+# Org Model Router "Run on first message" (OHE-3508). Same text Agent Canvas
+# appends locally (``buildRouterAtStartSystemSuffix``), so the agent behaves the
+# same on every backend.
+ROUTE_AT_CONVERSATION_START_INSTRUCTION = '\n'.join(
+    [
+        '<ROUTE_AT_CONVERSATION_START>',
+        'Before responding to the FIRST user message of this conversation, call',
+        'the `route_task_to_model` tool with that user message so the active',
+        'Model Router selects the appropriate model. After the router switches',
+        "the model, continue handling the user's request with the switched",
+        'model. Apply this only to the very first user message; do not route',
+        'subsequent messages this way.',
+        '</ROUTE_AT_CONVERSATION_START>',
+    ]
+)
+
+_EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+# Upper bound for the provider lookup of a repository started without a
+# provider, so a slow git provider cannot hold up the conversation start.
+_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
+
+# Lifetime of the per-conversation Azure DevOps credential-helper exchange JWT.
+# Sized to a working session (on the order of the sandbox max_session_seconds),
+# not the multi-day resume window: the credential is minted fresh at every
+# conversation start, matching how GitHub/GitLab deliver theirs. A conversation
+# resumed after a pause longer than this can meet an expired credential — the
+# same limit those providers have today; the durable fix is the sandbox-bound
+# credential tracked in ak684/oh#124.
+_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
+# The other providers' credential-helper JWTs live as long.
+_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT = _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+# Registering re-minted credential-helper JWTs in a resumed sandbox's conversations.
+_RESUME_SECRETS_TIMEOUT_SECONDS = 30.0
+
+
+async def _mint_azure_devops_access_token_for_user(
+    user_context: UserContext, jwt_service: JwtService, web_url: str | None
+) -> str | None:
+    """A fresh Azure DevOps credential-helper exchange JWT for this user.
+
+    None unless the user has an Entra (JWT) Azure DevOps token and a
+    ``web_url`` exists (the secrets endpoint lives under it). Best-effort: a
+    failure to mint must never block a conversation start or a resume (Azure
+    DevOps git simply will not be set up), like the credential and marketplace
+    helpers.
+    """
+    if not web_url:
+        return None
+    try:
+        token = await get_azure_devops_bearer_token(user_context)
+        if not token:
+            return None
+        user_id = await user_context.get_user_id()
+        if not user_id:
+            return None
+        return jwt_service.create_jws_token(
+            payload={
+                'user_id': user_id,
+                'provider_type': ProviderType.AZURE_DEVOPS.value,
+            },
+            expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+            audience=JwtAudience.SECRET_LOOKUP,
+        )
+    except Exception as exc:
+        _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+        return None
+
+
+async def _mint_git_credential_access_tokens_for_user(
+    user_context: UserContext, jwt_service: JwtService, secret_lookup_url: str | None
+) -> dict[str, str]:
+    """Fresh credential-helper exchange JWTs for this user, keyed by provider.
+
+    One per provider the user has a token for, Azure DevOps excepted (it keeps
+    its own helper). Empty when the sandbox cannot call back to the webhook
+    secrets endpoint (``secret_lookup_url`` is None: nothing is minted and the
+    clones keep their authenticated URL, see ``_clone_repository``) or minting
+    fails. Best-effort, like the Azure DevOps one.
+    """
+    if not secret_lookup_url:
+        return {}
+    try:
+        provider_handler = await user_context.get_provider_handler()
+        user_id = await user_context.get_user_id()
+        if not user_id:
+            return {}
+        tokens: dict[str, str] = {}
+        for provider in provider_handler.provider_tokens:
+            if provider == ProviderType.AZURE_DEVOPS:
+                continue
+            tokens[provider.value] = jwt_service.create_jws_token(
+                payload={'user_id': user_id, 'provider_type': provider.value},
+                expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                audience=JwtAudience.SECRET_LOOKUP,
+            )
+        return tokens
+    except Exception as exc:
+        _logger.warning(f'Could not mint git credential access tokens: {exc!r}')
+        return {}
+
+
+def _resolve_title_llm_profile(
+    user: UserInfo, conversation_model: str | None = None
+) -> str | None:
+    preference = getattr(user, 'title_llm_profile', None)
+    if (
+        preference
+        and PROFILE_NAME_REGEX.match(preference)
+        and user.llm_profiles.has(preference)
+    ):
+        return preference
+
+    active = user.llm_profiles.active
+    if active and PROFILE_NAME_REGEX.match(active) and user.llm_profiles.has(active):
+        # A conversation started on another model (a picked profile, a model
+        # override or an agent profile) is titled with that model: without a
+        # title profile the agent-server falls back to the agent's LLM.
+        if (
+            conversation_model
+            and user.llm_profiles.require(active).model != conversation_model
+        ):
+            return None
+        return active
+    return None
+
+
+class _StreamingZipBuffer(io.RawIOBase):
+    """Small non-seekable writer used by zipfile to emit chunks incrementally.
+
+    zipfile.ZipFile only needs write() and tell() from its underlying file
+    object when writing to a non-seekable stream.  Everything else
+    (flush, writable, seekable) is either unused by zipfile or already
+    handled by the io.RawIOBase defaults.
+    """
+
+    def __init__(self):
+        self._chunks: list[bytes] = []
+        self._position = 0
+
+    def write(self, data) -> int:
+        chunk = bytes(data)
+        if chunk:
+            self._chunks.append(chunk)
+            self._position += len(chunk)
+        return len(data)
+
+    def tell(self) -> int:
+        return self._position
+
+    def drain(self) -> list[bytes]:
+        chunks = self._chunks
+        self._chunks = []
+        return chunks
+
+
+def _expected_sdk_version() -> str | None:
+    """App's pinned openhands-sdk version, or None if its metadata is unresolvable."""
+    try:
+        return importlib.metadata.version('openhands-sdk')
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+# Planning agent instruction to prevent "Ready to proceed?" behavior
+PLANNING_AGENT_INSTRUCTION = """<IMPORTANT_PLANNING_BOUNDARIES>
+You are a Planning Agent that can ONLY create plans - you CANNOT execute code or make changes.
+
+After you finalize the plan in PLAN.md:
+- Do NOT ask "Ready to proceed?" or offer to execute the plan
+- Do NOT attempt to run any implementation commands
+- Instead, inform the user they have two options to proceed:
+  1. Click the **Build** button below the plan preview - this will automatically switch to the code agent and instruct it to execute the plan
+  2. Switch to the code agent manually (click the agent selector button or press Shift+Tab), then send a message instructing it to execute the plan
+
+Your role ends when the plan is finalized. Implementation is handled by the code agent.
+</IMPORTANT_PLANNING_BOUNDARIES>"""
+
+GIT_SHALLOW_CLONE_CONTEXT = """<GIT_WORKSPACE_CONTEXT>
+The selected repository was cloned as a shallow clone. Git history may be incomplete. Before using operations that depend on full history, tags, merge bases, historical blame, or arbitrary commit checkout, run `git rev-parse --is-shallow-repository`. If full history is needed, run `git fetch --unshallow` or `git fetch --deepen=<n>`.
+</GIT_WORKSPACE_CONTEXT>"""
+
+
+def _exception_detail(exc: Exception) -> str:
+    """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail.
+
+    httpx.HTTPStatusError.__str__ carries only the status and URL; prefer the
+    agent server's response body so the real cause reaches the caller.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return agent_server_error_detail(exc)
+    detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('message'), str):
+        return detail['message']
+    return detail if isinstance(detail, str) else str(exc)
+
+
+def append_system_context(existing: str | None, block: str) -> str:
+    if not existing:
+        return block
+    if block in existing:
+        return existing
+    return f'{existing.rstrip()}\n\n{block}'
+
+
+def _azure_devops_repository_url(host: str, parts: list[str]) -> str:
+    org, project, repo = parts[0], parts[1], parts[2]
+    return (
+        f'https://{host}/{quote(org, safe="")}/{quote(project, safe="")}'
+        f'/_git/{quote(repo, safe="")}'
+    )
+
+
+def azure_devops_context(
+    selected_repository: str | None,
+    organizations: Sequence[str],
+    git_credentials_configured: bool,
+    additional_repositories: Sequence[str] = (),
+) -> str:
+    """Describe an Azure DevOps conversation's provider, host and organizations.
+
+    Without it, an agent asked to clone ``org/project/repo`` assumes GitHub. Built
+    only from repository and organization names, never credentials. The plain-git
+    line mirrors the per-organization credential helper, which is installed only
+    when a credential was minted and ``organizations`` is non-empty.
+    """
+    host = ProviderHandler.PROVIDER_DOMAINS[ProviderType.AZURE_DEVOPS]
+    if additional_repositories and not selected_repository:
+        lines = [
+            f'Azure DevOps repositories in this conversation are hosted at {host}.'
+        ]
+    else:
+        lines = [
+            f'The git provider for this conversation is Azure DevOps, hosted at {host}.'
+        ]
+    for label, repository in [
+        ('Selected repository', selected_repository),
+        *(('Additional repository', name) for name in additional_repositories),
+    ]:
+        parts = (repository or '').split('/')
+        if len(parts) >= 3:
+            lines.append(
+                f'{label}: organization `{parts[0]}`, project `{parts[1]}`, '
+                f'repository `{parts[2]}` ({_azure_devops_repository_url(host, parts)}).'
+            )
+    lines.append(
+        'An Azure DevOps repository written as ORG/PROJECT/REPO is cloned from '
+        f'https://{host}/ORG/PROJECT/_git/REPO.'
+    )
+    if organizations:
+        names = ', '.join(f'`{org}`' for org in organizations)
+        lines.append(f"The user's Azure DevOps organizations: {names}.")
+        if git_credentials_configured:
+            lines.append(
+                'Git credentials are configured for these organizations: use plain '
+                '`git clone`, `git fetch`, `git pull` and `git push`, and do not put '
+                'tokens in remote URLs or add authentication options.'
+            )
+    lines.append(
+        'For the Azure DevOps REST API and pull requests, use the azure-devops skill.'
+    )
+    body = '\n'.join(lines)
+    return f'<AZURE_DEVOPS_CONTEXT>\n{body}\n</AZURE_DEVOPS_CONTEXT>'
+
+
+def effective_disabled_skills(
+    user: UserInfo, request_disabled_skills: Sequence[str] | None = None
+) -> list[str]:
+    """Union of the member-, launched-profile- and per-request skill deny-lists.
+
+    A skill disabled at ANY level stays off. The member's deny-list rides
+    ``user.disabled_skills``; the launched Agent Profile's rides the resolved
+    ``agent_settings.agent_context.disabled_skills`` (the SDK resolver stamps the
+    profile's ``disabled_skills`` there — #4017); ``request_disabled_skills`` is
+    the one-off list a caller passed on the start request. On a non-profile
+    launch the resolved context's deny-list is empty, so this is just the
+    member's list (plus the request's, if any). Order-preserving de-dup.
+    Because it is a deny-list, a name absent from the discovered catalog is a
+    harmless no-op, so no reconciliation is needed between the sources.
+    """
+    member = list(user.disabled_skills or [])
+    agent_settings = getattr(user, 'agent_settings', None)
+    agent_context = getattr(agent_settings, 'agent_context', None)
+    profile = list(getattr(agent_context, 'disabled_skills', None) or [])
+    requested = list(request_disabled_skills or [])
+    return list(dict.fromkeys([*member, *profile, *requested]))
+
+
+def _to_sdk_marketplace_registrations(
+    registrations: list[MarketplaceRegistration] | None,
+) -> list[SDKMarketplaceRegistration]:
+    if not registrations:
+        return []
+    return [
+        SDKMarketplaceRegistration(
+            name=registration.name,
+            source=registration.source,
+            ref=registration.ref,
+            repo_path=registration.repo_path,
+            auto_load=registration.auto_load,
+        )
+        for registration in registrations
+    ]
+
+
+def _apply_profile_secret_scope(
+    secrets: dict[str, Any],
+    user: UserInfo,
+) -> dict[str, Any]:
+    """Filter secrets by the resolved profile allow-list.
+
+    The system-managed ``OPENHANDS_API_KEY`` is never filtered: the sandbox
+    needs it to call back to OpenHands whatever the profile lists.
+    """
+    refs = getattr(user, 'active_agent_profile_secret_refs', None)
+    if refs is None:
+        return secrets
+    allowed = set(refs) | {'OPENHANDS_API_KEY'}
+    dropped = sorted(set(secrets) - allowed)
+    if dropped:
+        _logger.info(
+            'agent_profile_secret_scope:filtered',
+            extra={'dropped_secret_names': dropped},
+        )
+    return {name: value for name, value in secrets.items() if name in allowed}
+
+
+def _compose_system_message_suffix(
+    profile_suffix: str | None,
+    runtime_suffix: str | None,
+) -> str | None:
+    """Append serving context to the profile suffix."""
+    parts = [part for part in (profile_suffix, runtime_suffix) if part]
+    return '\n\n'.join(parts) if parts else None
+
+
+class SandboxRuntime(NamedTuple):
+    """What ``/server_info`` says about the sandbox before a start."""
+
+    browser_available: bool
+    sdk_version: str | None
+
+
+def _profile_runtime_requirement(
+    agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
+) -> str | None:
+    """What this launch needs from an openhands-sdk >=1.54.0 runtime, or None.
+
+    An older agent-server rejects the ACP ``agent_settings`` transport and
+    silently drops a profile persona; it honors everything else the launch
+    request carries.
+    """
+    if isinstance(agent_settings, ACPAgentSettings):
+        return 'an ACP agent'
+    if agent_settings.persona is not None:
+        return 'an Agent Profile persona'
+    return None
+
+
+@dataclass
+class LiveStatusAppConversationService(AppConversationServiceBase):
+    """AppConversationService which combines live status info from the sandbox with stored data."""
+
+    user_context: UserContext
+    app_conversation_info_service: AppConversationInfoService
+    app_conversation_start_task_service: AppConversationStartTaskService
+    event_callback_service: EventCallbackService
+    event_service: EventService
+    sandbox_service: SandboxService
+    sandbox_spec_service: SandboxSpecService
+    jwt_service: JwtService
+    pending_message_service: PendingMessageService
+    sandbox_startup_timeout: int
+    sandbox_startup_poll_frequency: int
+    max_num_conversations_per_sandbox: int
+    httpx_client: httpx.AsyncClient
+    web_url: str | None
+    openhands_provider_base_url: str | None
+    access_token_hard_timeout: timedelta | None
+    conversation_secret_enricher: ConversationSecretEnricher = field(
+        default_factory=ConversationSecretEnricher
+    )
+    app_mode: str | None = None
+    export_max_events: int = 0
+    export_lock_ttl_seconds: int = 3600
+    export_lock_refresh_interval_seconds: int = 30
+    export_lock_required: bool | None = None
+    enable_child_conversation_launcher: bool = False
+    # Deployment-configured default grouping strategy, used when a user/org
+    # has not set ``sandbox_grouping_strategy`` on their own settings. See
+    # ``_get_sandbox_grouping_strategy``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
+
+    def _maybe_append_shallow_clone_context(
+        self,
+        user: UserInfo,
+        selected_repository: str | None,
+        system_message_suffix: str | None,
+    ) -> str | None:
+        if selected_repository and not bool(getattr(user, 'git_full_clone', False)):
+            return append_system_context(
+                system_message_suffix, GIT_SHALLOW_CLONE_CONTEXT
+            )
+        return system_message_suffix
+
+    async def _maybe_append_azure_devops_context(
+        self,
+        git_provider: ProviderType | None,
+        selected_repository: str | None,
+        azure_devops_access_token: str | None,
+        system_message_suffix: str | None,
+        additional_repositories: Sequence[AdditionalRepository] = (),
+    ) -> str | None:
+        additional = azure_devops_repositories(additional_repositories)
+        if git_provider != ProviderType.AZURE_DEVOPS:
+            if not additional:
+                return system_message_suffix
+            selected_repository = None
+        # The same organizations the git credential helper is installed for.
+        organizations = await azure_devops_user_orgs(
+            self.user_context, selected_repository, additional
+        )
+        return append_system_context(
+            system_message_suffix,
+            azure_devops_context(
+                selected_repository,
+                organizations,
+                git_credentials_configured=bool(azure_devops_access_token),
+                additional_repositories=additional,
+            ),
+        )
+
+    async def _append_git_context(
+        self,
+        user: UserInfo,
+        git_provider: ProviderType | None,
+        selected_repository: str | None,
+        selected_branch: str | None,
+        azure_devops_access_token: str | None,
+        system_message_suffix: str | None,
+        working_dir: str,
+        additional_repositories: Sequence[AdditionalRepository],
+    ) -> str | None:
+        system_message_suffix = self._maybe_append_shallow_clone_context(
+            user,
+            selected_repository
+            or (
+                additional_repositories[0].repository
+                if additional_repositories
+                else None
+            ),
+            system_message_suffix,
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
+            additional_repositories,
+        )
+        if additional_repositories:
+            system_message_suffix = append_system_context(
+                system_message_suffix,
+                repositories_context(
+                    selected_repository,
+                    selected_branch,
+                    git_provider,
+                    get_project_dir(working_dir, selected_repository),
+                    additional_repositories,
+                ),
+            )
+        return system_message_suffix
+
+    async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
+        """Get the effective sandbox grouping strategy.
+
+        Precedence: the user/org-configured value from settings, else this
+        service's deployment-configured default (``self.sandbox_grouping_strategy``,
+        set via ``LiveStatusAppConversationServiceInjector``), else
+        ``NO_GROUPING``.
+        """
+        user_info = await self.user_context.get_user_info()
+        return (
+            user_info.sandbox_grouping_strategy
+            or self.sandbox_grouping_strategy
+            or SandboxGroupingStrategy.NO_GROUPING
+        )
+
+    async def search_app_conversations(
+        self,
+        title__contains: str | None = None,
+        created_at__gte: datetime | None = None,
+        created_at__lt: datetime | None = None,
+        updated_at__gte: datetime | None = None,
+        updated_at__lt: datetime | None = None,
+        sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
+        sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
+        page_id: str | None = None,
+        limit: int = 20,
+        include_sub_conversations: bool = False,
+    ) -> AppConversationPage:
+        """Search for sandboxed conversations."""
+        page = await self.app_conversation_info_service.search_app_conversation_info(
+            title__contains=title__contains,
+            created_at__gte=created_at__gte,
+            created_at__lt=created_at__lt,
+            updated_at__gte=updated_at__gte,
+            updated_at__lt=updated_at__lt,
+            sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
+            sort_order=sort_order,
+            page_id=page_id,
+            limit=limit,
+            include_sub_conversations=include_sub_conversations,
+        )
+        conversations: list[AppConversation] = await self._build_app_conversations(
+            page.items
+        )  # type: ignore
+        return AppConversationPage(items=conversations, next_page_id=page.next_page_id)
+
+    async def count_app_conversations(
+        self,
+        title__contains: str | None = None,
+        created_at__gte: datetime | None = None,
+        created_at__lt: datetime | None = None,
+        updated_at__gte: datetime | None = None,
+        updated_at__lt: datetime | None = None,
+        sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
+    ) -> int:
+        return await self.app_conversation_info_service.count_app_conversation_info(
+            title__contains=title__contains,
+            created_at__gte=created_at__gte,
+            created_at__lt=created_at__lt,
+            updated_at__gte=updated_at__gte,
+            updated_at__lt=updated_at__lt,
+            sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
+        )
+
+    async def get_app_conversation(
+        self, conversation_id: UUID
+    ) -> AppConversation | None:
+        info = await self.app_conversation_info_service.get_app_conversation_info(
+            conversation_id
+        )
+        result = await self._build_app_conversations([info])
+        return result[0]
+
+    async def batch_get_app_conversations(
+        self, conversation_ids: list[UUID]
+    ) -> list[AppConversation | None]:
+        info = await self.app_conversation_info_service.batch_get_app_conversation_info(
+            conversation_ids
+        )
+        conversations = await self._build_app_conversations(info)
+        return conversations
+
+    async def start_app_conversation(
+        self, request: AppConversationStartRequest
+    ) -> AsyncGenerator[AppConversationStartTask, None]:
+        async for task in self._start_app_conversation(request):
+            await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                task
+            )
+            yield task
+
+    async def _start_app_conversation(
+        self, request: AppConversationStartRequest
+    ) -> AsyncGenerator[AppConversationStartTask, None]:
+        # Create and yield the start task
+        user_id = await self.user_context.get_user_id()
+
+        # Validate and inherit from parent conversation if provided
+        if request.parent_conversation_id:
+            parent_info = (
+                await self.app_conversation_info_service.get_app_conversation_info(
+                    request.parent_conversation_id
+                )
+            )
+            if parent_info is None:
+                raise ValueError(
+                    f'Parent conversation not found: {request.parent_conversation_id}'
+                )
+            self._inherit_configuration_from_parent(request, parent_info)
+
+        self._apply_suggested_task(request)
+        self._apply_default_trigger(request)
+
+        # Resolved once: validation, the build and provenance must see one revision.
+        user = await self.user_context.get_user_info(
+            resolve_agent_profile=True,
+            override_agent_profile_id=request.agent_profile_id,
+        )
+        agent_settings = user.agent_settings
+        validate_acp_provider_surfaced(agent_settings)
+        if isinstance(agent_settings, ACPAgentSettings) and request.client_tools:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='client_tools are not supported for ACP agent launches',
+            )
+        if request.llm_profile:
+            if not isinstance(agent_settings, OpenHandsAgentSettings):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='llm_profile is not supported for ACP agent launches',
+                )
+            profile_llm = user.llm_profiles.get(request.llm_profile)
+            if profile_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Profile '{request.llm_profile}' not found",
+                )
+            # Imported lazily: settings_router transitively imports this service,
+            # so a module-level import would be circular.
+            from openhands.app_server.settings.settings_router import (
+                LITE_LLM_API_URL,
+            )
+
+            # Resolve the profile as switch_profile does, and copy rather than
+            # mutate: the user context may cache the resolved settings.
+            try:
+                profile_llm = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=agent_settings.llm.api_key,
+                    connections=await self.user_context.get_provider_connections(),
+                    strict=True,
+                )
+            except ProviderConnectionNotFoundError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=exc.profile_detail,
+                ) from exc
+            # The fallback above is the launch LLM's key. A profile on the
+            # managed proxy may only carry a managed key, and the launch LLM's
+            # key is one only when that LLM is managed itself: a BYOR launch
+            # LLM's key is its own provider's and must not reach the proxy.
+            # Drop it; ``_maybe_refresh_managed_llm_key`` attaches the member's
+            # managed key. ``storage`` is SaaS-only; OSS has no managed keys.
+            try:
+                from storage.saas_settings_store import (  # type: ignore[import-not-found]
+                    managed_llm_key_config_from_model,
+                )
+            except ImportError:
+                pass
+            else:
+                launch_llm = agent_settings.llm
+                if (
+                    managed_llm_key_config_from_model(
+                        profile_llm.model,
+                        profile_llm.base_url,
+                        getattr(profile_llm, 'provider_connection_id', None),
+                    )
+                    is not None
+                    and managed_llm_key_config_from_model(
+                        launch_llm.model,
+                        launch_llm.base_url,
+                        getattr(launch_llm, 'provider_connection_id', None),
+                    )
+                    is None
+                ):
+                    _logger.info(
+                        'app_conversation_start:drop_launch_key_for_managed_llm_profile',
+                        extra={
+                            'user_id': user_id,
+                            'llm_profile': request.llm_profile,
+                            'launch_model': launch_llm.model,
+                        },
+                    )
+                    profile_llm = profile_llm.model_copy(update={'api_key': None})
+            agent_settings = agent_settings.model_copy(update={'llm': profile_llm})
+            user = user.model_copy(update={'agent_settings': agent_settings})
+
+        # Org Model Router "Run on first message": the launch carries the
+        # router only when the org activated one (SaasSettingsStore inlines
+        # it). An explicit per-launch LLM pick is a stronger signal than the
+        # org policy, so the instruction is skipped then.
+        if (
+            isinstance(agent_settings, OpenHandsAgentSettings)
+            and agent_settings.enable_classify_and_switch_llm_tool
+            and not request.llm_profile
+        ):
+            await self._maybe_append_route_at_start_instruction(request)
+
+        message = (
+            ' '.join(
+                content.text
+                for content in request.initial_message.content
+                if isinstance(content, TextContent)
+            ).strip()
+            if request.initial_message
+            else ''
+        )
+        generation = (
+            pending_start_title(message)
+            if request.generate_title_on_submit and not request.title and message
+            else None
+        )
+        task = AppConversationStartTask(
+            created_by_user_id=user_id,
+            request=request,
+            title_generation=generation,
+        )
+        yield task
+
+        title_job = (
+            asyncio.create_task(self._generate_start_title(task, message, user))
+            if generation
+            else None
+        )
+        try:
+            async for updated_task in self._wait_for_sandbox_start(task):
+                yield updated_task
+
+            # Get the sandbox
+            sandbox_id = task.sandbox_id
+            assert sandbox_id is not None
+            sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
+            assert sandbox is not None
+            agent_server_url = self._get_agent_server_url(sandbox)
+            runtime = await self._ensure_profile_runtime(
+                agent_server_url, sandbox.session_api_key, agent_settings
+            )
+            browser_available = runtime.browser_available
+
+            # Get the working dir
+            sandbox_spec = (
+                await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+                    sandbox.sandbox_spec_id, sandbox_id
+                )
+            )
+
+            # Set up conversation id
+            conversation_id = request.conversation_id or uuid4()
+
+            # Setup working dir based on grouping
+            sandbox_grouping_strategy = await self._get_sandbox_grouping_strategy()
+            working_dir = grouped_workspace_dir(
+                sandbox_spec.working_dir,
+                sandbox_grouping_strategy,
+                conversation_id.hex,
+            )
+
+            # Mint this conversation's Azure DevOps credential-helper token
+            # before setup runs (the setup flow writes it to the sandbox and the
+            # request builder registers it for masking).
+            await self._mint_azure_devops_access_token(task)
+            await self._mint_git_credential_access_tokens(task)
+
+            # Run setup scripts
+            remote_workspace = AsyncRemoteWorkspace(
+                host=agent_server_url,
+                api_key=sandbox.session_api_key,
+                working_dir=working_dir,
+            )
+            async for updated_task in self.run_setup_scripts(
+                task, sandbox, remote_workspace, agent_server_url, conversation_id
+            ):
+                yield updated_task
+
+            # Resolve the provider before the agent-server starts the
+            # conversation, so the save below is not delayed while the
+            # "started" webhook may already be writing the row. The agent
+            # gets the same provider, so its PLAN.md path matches the one
+            # that sub-conversations inherit from the saved row.
+            git_provider = request.git_provider
+            if request.selected_repository and git_provider is None:
+                git_provider = await self._resolve_git_provider(
+                    request.selected_repository
+                )
+
+            _logger.info(
+                'app_conversation_start:building_start_request',
+                extra={
+                    'user_id': user_id,
+                    'task_id': str(task.id),
+                    'conversation_id': str(conversation_id),
+                    'agent_type': request.agent_type.value,
+                    'llm_model_override': request.llm_model,
+                },
+            )
+
+            # The request builder loads skills with the final marketplace/filter settings.
+            task.status = AppConversationStartTaskStatus.SETTING_UP_SKILLS
+            yield task
+
+            # Build the start request
+            start_conversation_request = (
+                await self._build_start_conversation_request_for_user(
+                    user,
+                    sandbox,
+                    conversation_id,
+                    request.initial_message,
+                    request.system_message_suffix,
+                    git_provider,
+                    working_dir,
+                    request.agent_type,
+                    request.llm_model,
+                    trigger=request.trigger,
+                    remote_workspace=remote_workspace,
+                    selected_repository=request.selected_repository,
+                    selected_branch=request.selected_branch,
+                    plugins=request.plugins,
+                    client_tools=request.client_tools,
+                    api_secrets=request.secrets,
+                    azure_devops_access_token=task._azure_devops_access_token,
+                    git_credential_access_tokens=task._git_credential_access_tokens,
+                    system_prompt=request.system_prompt,
+                    disabled_skills=request.disabled_skills,
+                    browser_available=browser_available,
+                    request_observability_metadata=request.observability_metadata,
+                    request_observability_tags=request.observability_tags,
+                    request_observability_span_name=request.observability_span_name,
+                    additional_repositories=task._additional_repositories,
+                    sandbox_sdk_version=runtime.sdk_version,
+                )
+            )
+
+            start_conversation_request = (
+                await customer_gateway_hooks.bind_start_request(
+                    start_conversation_request,
+                    sandbox,
+                    request.trigger.value if request.trigger else None,
+                )
+            )
+
+            # Build before seeding, which can refresh the captured user's LLM key.
+            # Profiles must still be available before the conversation is created.
+            await self._seed_sandbox_profiles(
+                agent_server_url, sandbox.session_api_key, sandbox=sandbox
+            )
+
+            await self._activate_codex_credential_binding(
+                request, user, sandbox, agent_server_url, conversation_id
+            )
+
+            # update status
+            task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
+            task.agent_server_url = agent_server_url
+            yield task
+
+            # Start conversation...
+            body_json = start_conversation_request.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            if task.title_generation is not None:
+                body_json['autotitle'] = False
+                body_json['title'] = task.title_generation.title
+            elif request.title:
+                body_json['autotitle'] = False
+                body_json['title'] = request.title
+            # Keep the agent-server ``user_id`` aligned with app-server and
+            # frontend PostHog identity. The agent-server uses it both for
+            # product analytics distinct_id and Laminar trace_user_id; user
+            # email is added to observability metadata by the request builder
+            # so Laminar traces remain searchable without splitting PostHog
+            # persons.
+            if user.id:
+                body_json['user_id'] = user.id
+            headers = (
+                {'X-Session-API-Key': sandbox.session_api_key}
+                if sandbox.session_api_key
+                else {}
+            )
+            response = await self.httpx_client.post(
+                f'{agent_server_url}/api/conversations',
+                json=body_json,
+                headers=headers,
+                timeout=self.sandbox_startup_timeout,
+            )
+
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                # A custom image that 500s on create is usually an openhands-sdk
+                # mismatch /server_info couldn't reveal; add an actionable hint.
+                if is_custom_sandbox_spec(sandbox.sandbox_spec_id):
+                    expected = _expected_sdk_version()
+                    raise SandboxError(
+                        f'Conversation create failed (HTTP '
+                        f'{exc.response.status_code}) on custom sandbox image '
+                        f'{sandbox.sandbox_spec_id}. Verify its openhands-sdk '
+                        f'matches this release'
+                        + (f' ({expected})' if expected else '')
+                        + '; rebuild/re-pin the image if not.'
+                    ) from exc
+                raise
+            info = ConversationInfo.model_validate(response.json())
+            # Determine kind / llm_model from the request we built (its
+            # ``agent`` is the source of truth here): the response echoes
+            # the same agent back through the AgentBase discriminator.
+            request_agent = start_conversation_request.agent
+            if request_agent is None:
+                request_agent = info.agent
+            tags: dict[str, str] = {}
+            # Pin where the workspace was actually created so the delete-time
+            # archive captures the right directory without re-deriving the path
+            # from settings (e.g. grouping) that may change before delete.
+            tags[ARCHIVE_WORKSPACE_PATH_TAG_KEY] = working_dir
+            # Stamp Agent Profile provenance. The launched profile resolved into
+            # the launched ``agent_settings`` (a resolve-requested load carries
+            # its id + revision onto UserInfo); ride the tags dict so it
+            # round-trips and surfaces as the ``launched_agent_profile``
+            # computed field.
+            launched_profile_id = getattr(user, 'active_agent_profile_id', None)
+            if isinstance(launched_profile_id, str) and launched_profile_id:
+                tags[AGENT_PROFILE_ID_TAG_KEY] = launched_profile_id
+                launched_revision = getattr(user, 'active_agent_profile_revision', None)
+                if isinstance(launched_revision, int):
+                    tags[AGENT_PROFILE_REVISION_TAG_KEY] = str(launched_revision)
+            if request_agent.agent_kind == 'acp':
+                llm_model = request_agent.acp_model
+                agent_kind = 'acp'
+                # Persist the active ACP provider key so the conversation UI
+                # can resolve a brand label ("Claude Code", "Codex", …) via
+                # the SDK registry without keeping a per-conversation column.
+                # Surfaced to the UI as the projected ``acp_server`` field.
+                if isinstance(user.agent_settings, ACPAgentSettings):
+                    tags[ACP_SERVER_TAG_KEY] = user.agent_settings.acp_server
+            else:
+                llm_model = request_agent.llm.model
+                agent_kind = 'openhands'
+
+            conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
+            if request.selected_repository:
+                conversation_tags['repo_name'] = request.selected_repository
+            if git_provider:
+                conversation_tags['git_provider'] = git_provider.value
+            if request.selected_branch:
+                conversation_tags['selected_branch'] = request.selected_branch
+
+            app_conversation_info = AppConversationInfo(
+                id=info.id,
+                title=request.title
+                or (
+                    task.title_generation.title
+                    if task.title_generation
+                    else f'Conversation {info.id.hex[:5]}'
+                ),
+                title_generation=task.title_generation,
+                sandbox_id=sandbox.id,
+                created_by_user_id=user_id,
+                llm_model=llm_model,
+                agent_kind=agent_kind,
+                # Git parameters
+                selected_repository=request.selected_repository,
+                selected_branch=request.selected_branch,
+                git_provider=git_provider,
+                trigger=request.trigger,
+                pr_number=request.pr_number,
+                additional_repositories=task._additional_repositories,
+                parent_conversation_id=request.parent_conversation_id,
+                tags=conversation_tags,
+            )
+            await self.app_conversation_info_service.save_app_conversation_info(
+                app_conversation_info
+            )
+
+            # Setup default processors
+            processors = [
+                processor
+                for processor in (request.processors or [])
+                if task.title_generation is None
+                or not isinstance(processor, SetTitleCallbackProcessor)
+            ]
+
+            # Auto-title unless the caller supplied a title: the generated
+            # title must not replace the one the caller chose.
+            if not request.title and task.title_generation is None:
+                has_set_title_processor = any(
+                    isinstance(processor, SetTitleCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_set_title_processor:
+                    processors.append(SetTitleCallbackProcessor())
+
+            # Register MemoryChangeCallbackProcessor when the user has
+            # enterprise persistent memory enabled. ``enable_memory_context``
+            # is a top-level user setting (not the SDK's ``load_memory``, which
+            # lives inside agent_settings.agent_context and is dropped by the
+            # fresh AgentContext built in _build_start_conversation_request).
+            if getattr(user, 'enable_memory_context', False):
+                has_memory_processor = any(
+                    isinstance(processor, MemoryChangeCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_memory_processor:
+                    processors.append(MemoryChangeCallbackProcessor())
+
+            # Save processors
+            for processor in processors:
+                await self.event_callback_service.save_event_callback(
+                    EventCallback(
+                        conversation_id=info.id,
+                        event_kind=processor.get_event_kind(),
+                        processor=processor,
+                    )
+                )
+
+            # Update the start task
+            task.status = AppConversationStartTaskStatus.READY
+            task.app_conversation_id = info.id
+            if task.title_generation and task.title_generation.status != 'pending':
+                try:
+                    await self.app_conversation_info_service.complete_title_generation(
+                        info.id, task.title_generation
+                    )
+                except Exception:
+                    _logger.exception('Failed to settle conversation title at startup')
+            yield task
+
+            # Process any pending messages queued while waiting for conversation
+            if sandbox.session_api_key:
+                await self._process_pending_messages(
+                    task_id=task.id,
+                    conversation_id=info.id,
+                    agent_server_url=agent_server_url,
+                    session_api_key=sandbox.session_api_key,
+                )
+
+        except Exception as exc:
+            _logger.exception('Error starting conversation', stack_info=True)
+            task.status = AppConversationStartTaskStatus.ERROR
+            task._startup_error = exc
+            task.detail = redact_text_secrets(
+                redact_api_key_literals(_exception_detail(exc))
+            )
+            yield task
+        finally:
+            if title_job is not None:
+                if task.status == AppConversationStartTaskStatus.ERROR:
+                    title_job.cancel()
+                await asyncio.gather(title_job, return_exceptions=True)
+                if task.status == AppConversationStartTaskStatus.READY:
+                    await self._sync_start_title(task)
+
+    async def _sync_start_title(self, task: AppConversationStartTask) -> None:
+        if not task.app_conversation_id:
+            return
+        try:
+            async with asyncio.timeout(3):
+                info = (
+                    await self.app_conversation_info_service.get_app_conversation_info(
+                        task.app_conversation_id
+                    )
+                )
+                if info and info.title:
+                    await self.update_agent_server_conversation_title(
+                        info.id.hex, info.title, info
+                    )
+        except Exception:
+            _logger.info(
+                'Runtime title sync unavailable; app title remains authoritative'
+            )
+
+    async def _start_title_llm(
+        self, user: UserInfo, request: AppConversationStartRequest
+    ) -> LLM | None:
+        from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        # The startup title runs in the app server, outside any sandbox an inference
+        # token could be bound to; customer-gateway orgs use the first-message title.
+        if (
+            customer_gateway_hooks.deployment_switch_on()
+            and await customer_gateway_hooks.gateway_enabled_for_org(
+                await get_credential_org_id(self.user_context)
+            )
+        ):
+            return None
+
+        try:
+            agent_llm = (
+                self._configure_llm(user, request.llm_model)
+                if isinstance(user.agent_settings, OpenHandsAgentSettings)
+                else None
+            )
+            name = _resolve_title_llm_profile(
+                user, agent_llm.model if agent_llm else None
+            )
+            llm = user.llm_profiles.require(name) if name else agent_llm
+            if llm is None or llm.usage_id == 'acp-managed':
+                return None
+            resolved = resolve_profile_llm(
+                llm,
+                managed_proxy_url=LITE_LLM_API_URL,
+                fallback_api_key=agent_llm.api_key if agent_llm else None,
+                connections=await self.user_context.get_provider_connections(),
+                strict=True,
+            )
+            resolved = await self._maybe_refresh_managed_llm_key(user, resolved)
+            return detach_provider_connection(resolved).model_copy(
+                update={'usage_id': 'title', 'stream': False}
+            )
+        except Exception:
+            _logger.info(
+                'Startup title model unavailable; using first-message fallback'
+            )
+            return None
+
+    async def _generate_start_title(
+        self, task: AppConversationStartTask, message: str, user: UserInfo
+    ) -> None:
+        assert task.title_generation is not None
+        pending = task.title_generation
+        try:
+            remaining = max(0, (pending.deadline_at - utc_now()).total_seconds())
+            async with asyncio.timeout(remaining):
+                llm = await self._start_title_llm(user, task.request)
+                generation = await generate_start_title(pending, message, llm)
+        except Exception:
+            generation = pending.model_copy(update={'status': 'fallback'})
+        task.title_generation = generation
+        try:
+            await self._persist_start_title(task, generation)
+        except Exception:
+            _logger.exception('Failed to persist startup title')
+
+    async def _persist_start_title(
+        self, task: AppConversationStartTask, generation: ConversationTitleGeneration
+    ) -> None:
+        from openhands.app_server.config import (
+            get_app_conversation_info_service,
+            get_app_conversation_start_task_service,
+        )
+        from openhands.app_server.user.specifiy_user_context import (
+            ADMIN,
+            USER_CONTEXT_ATTR,
+        )
+
+        # This worker needs its own session while sandbox startup uses the request's.
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, ADMIN)
+        async with get_app_conversation_start_task_service(state) as tasks:
+            await tasks.update_title_generation(task.id, generation)
+        if task.app_conversation_id:
+            state = InjectorState()
+            setattr(state, USER_CONTEXT_ATTR, ADMIN)
+            async with get_app_conversation_info_service(state) as conversations:
+                await conversations.complete_title_generation(
+                    task.app_conversation_id, generation
+                )
+
+    async def _build_app_conversations(
+        self, app_conversation_infos: Sequence[AppConversationInfo | None]
+    ) -> list[AppConversation | None]:
+        sandbox_id_to_conversation_ids = self._get_sandbox_id_to_conversation_ids(
+            app_conversation_infos
+        )
+
+        # Get referenced sandboxes in a single batch operation...
+        sandboxes = await self.sandbox_service.batch_get_sandboxes(
+            list(sandbox_id_to_conversation_ids)
+        )
+        sandboxes_by_id = {sandbox.id: sandbox for sandbox in sandboxes if sandbox}
+
+        # Gather the running conversations
+        tasks = [
+            self._get_live_conversation_info(
+                sandbox,
+                sandbox_id_to_conversation_ids.get(sandbox.id),
+            )
+            for sandbox in sandboxes
+            if sandbox and sandbox.status == SandboxStatus.RUNNING
+        ]
+        if tasks:
+            sandbox_conversation_infos = await asyncio.gather(*tasks)
+        else:
+            sandbox_conversation_infos = []
+
+        # Collect the results into a single dictionary
+        conversation_info_by_id = {}
+        for conversation_infos in sandbox_conversation_infos:
+            for conversation_info in conversation_infos:
+                conversation_info_by_id[conversation_info.id] = conversation_info
+
+        # Build app_conversation from info
+        result = [
+            (
+                self._build_conversation(
+                    app_conversation_info,
+                    sandboxes_by_id.get(app_conversation_info.sandbox_id),
+                    conversation_info_by_id.get(app_conversation_info.id),
+                )
+                if app_conversation_info
+                else None
+            )
+            for app_conversation_info in app_conversation_infos
+        ]
+
+        return result
+
+    async def _get_live_conversation_info(
+        self,
+        sandbox: SandboxInfo,
+        conversation_ids: list[UUID],
+    ) -> list[ConversationInfo]:
+        """Get agent status for multiple conversations from the Agent Server.
+
+        Uses the unified ``/api/conversations`` endpoint, which accepts both
+        regular and ACP agents through the ``AgentBase`` discriminated union.
+        """
+        if not conversation_ids:
+            return []
+
+        agent_server_url = self._get_agent_server_url(sandbox)
+        headers: dict[str, str] = {}
+        if sandbox.session_api_key:
+            headers['X-Session-API-Key'] = sandbox.session_api_key
+
+        try:
+            url = f'{agent_server_url.rstrip("/")}/api/conversations'
+            response = await self.httpx_client.get(
+                url,
+                params={'ids': [str(c) for c in conversation_ids]},
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
+            infos = _conversation_info_type_adapter.validate_python(data)
+            return [c for c in infos if c]
+        except httpx.HTTPStatusError:
+            _logger.warning(
+                f'Error getting conversation status from sandbox {sandbox.id}',
+                exc_info=True,
+            )
+        except Exception:
+            _logger.exception(
+                f'Error getting conversation status from sandbox {sandbox.id}',
+                stack_info=True,
+            )
+        return []
+
+    def _build_conversation(
+        self,
+        app_conversation_info: AppConversationInfo | None,
+        sandbox: SandboxInfo | None,
+        conversation_info: ConversationInfo | None,
+    ) -> AppConversation | None:
+        if app_conversation_info is None:
+            return None
+        sandbox_status = sandbox.status if sandbox else SandboxStatus.MISSING
+        execution_status = (
+            conversation_info.execution_status if conversation_info else None
+        )
+        # The agent-server lifts these off the live ACP session; nothing is
+        # persisted, so a stopped sandbox reports no models.
+        acp_available_models = (
+            list(conversation_info.available_models) if conversation_info else []
+        )
+        acp_supports_runtime_model_switch = bool(
+            conversation_info and conversation_info.supports_runtime_model_switch
+        )
+        conversation_url = None
+        session_api_key = None
+        if sandbox and sandbox.exposed_urls:
+            conversation_url = next(
+                (
+                    exposed_url.url
+                    for exposed_url in sandbox.exposed_urls
+                    if exposed_url.name == AGENT_SERVER
+                ),
+                None,
+            )
+            if conversation_url:
+                conversation_url += f'/api/conversations/{app_conversation_info.id.hex}'
+            session_api_key = sandbox.session_api_key
+
+        return AppConversation(
+            **app_conversation_info.model_dump(),
+            sandbox_status=sandbox_status,
+            execution_status=execution_status,
+            conversation_url=conversation_url,
+            conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
+            session_api_key=session_api_key,
+            acp_available_models=acp_available_models,
+            acp_supports_runtime_model_switch=acp_supports_runtime_model_switch,
+        )
+
+    def _get_sandbox_id_to_conversation_ids(
+        self, stored_conversations: Sequence[AppConversationInfo | None]
+    ):
+        result = defaultdict(list)
+        for stored_conversation in stored_conversations:
+            if stored_conversation:
+                result[stored_conversation.sandbox_id].append(stored_conversation.id)
+        return result
+
+    async def _find_running_sandbox_for_user(self) -> SandboxInfo | None:
+        """Find a running sandbox for the current user based on the grouping strategy.
+
+        Returns:
+            SandboxInfo if a running sandbox is found, None otherwise.
+        """
+        try:
+            user_id = await self.user_context.get_user_id()
+            sandbox_grouping_strategy = await self._get_sandbox_grouping_strategy()
+
+            # If no grouping, return None to force creation of a new sandbox
+            if sandbox_grouping_strategy == SandboxGroupingStrategy.NO_GROUPING:
+                return None
+
+            credential_org_id = await get_credential_org_id(self.user_context)
+            # SaaS requires a verified org; OSS contexts can be unscoped.
+            if credential_org_id is None and self.app_mode == 'saas':
+                return None
+
+            # Collect running sandboxes for this user in the caller's org. One
+            # started through the sandbox API is left out: it belongs to the
+            # client that started it (an automation run, the SDK), which may
+            # delete it at any moment, along with any conversation packed into
+            # it. Sandboxes that predate ``started_by`` stay eligible.
+            running_sandboxes = []
+            page_id = None
+            while True:
+                page = await self.sandbox_service.search_sandboxes(
+                    page_id=page_id, limit=100
+                )
+
+                for sandbox in page.items:
+                    if (
+                        sandbox.status == SandboxStatus.RUNNING
+                        and sandbox.created_by_user_id == user_id
+                        and sandbox.credential_org_id == credential_org_id
+                        and sandbox.started_by != SandboxStartedBy.SANDBOX_API
+                    ):
+                        running_sandboxes.append(sandbox)
+
+                if page.next_page_id is None:
+                    break
+                page_id = page.next_page_id
+
+            if not running_sandboxes:
+                return None
+
+            # Apply the grouping strategy
+            return await self._select_sandbox_by_strategy(
+                running_sandboxes, sandbox_grouping_strategy
+            )
+
+        except Exception as e:
+            _logger.warning(
+                f'Error finding running sandbox for user: {e}', exc_info=True
+            )
+            return None
+
+    async def _select_sandbox_by_strategy(
+        self,
+        running_sandboxes: list[SandboxInfo],
+        sandbox_grouping_strategy: SandboxGroupingStrategy,
+    ) -> SandboxInfo | None:
+        """Select a sandbox from the list based on the configured grouping strategy.
+
+        Args:
+            running_sandboxes: List of running sandboxes for the user
+            sandbox_grouping_strategy: The strategy to use for selection
+
+        Returns:
+            Selected sandbox based on the strategy, or None if no sandbox is available
+            (e.g., all sandboxes have reached max_num_conversations_per_sandbox)
+        """
+        # Get conversation counts for filtering by max_num_conversations_per_sandbox
+        sandbox_conversation_counts = await self._get_conversation_counts_by_sandbox(
+            [s.id for s in running_sandboxes]
+        )
+
+        # Filter out sandboxes that have reached the max number of conversations
+        available_sandboxes = [
+            s
+            for s in running_sandboxes
+            if sandbox_conversation_counts.get(s.id, 0)
+            < self.max_num_conversations_per_sandbox
+        ]
+
+        if not available_sandboxes:
+            # All sandboxes have reached the max - need to create a new one
+            return None
+
+        # Prefer sandboxes whose image runtime-api still advertises, so a new
+        # conversation is not routed into an old-image sandbox when a current
+        # one exists. Keep the full list when none is current or the lookup
+        # fails, rather than starting a new sandbox.
+        current_sandboxes = await self._filter_sandboxes_with_known_spec(
+            available_sandboxes
+        )
+        if current_sandboxes:
+            available_sandboxes = current_sandboxes
+
+        if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
+            # Return the first available sandbox
+            return available_sandboxes[0]
+
+        elif sandbox_grouping_strategy == SandboxGroupingStrategy.GROUP_BY_NEWEST:
+            # Return the most recently created sandbox
+            return max(available_sandboxes, key=lambda s: s.created_at)
+
+        elif sandbox_grouping_strategy == SandboxGroupingStrategy.LEAST_RECENTLY_USED:
+            # Return the least recently created sandbox (oldest)
+            return min(available_sandboxes, key=lambda s: s.created_at)
+
+        elif sandbox_grouping_strategy == SandboxGroupingStrategy.FEWEST_CONVERSATIONS:
+            # Return the one with fewest conversations
+            return min(
+                available_sandboxes,
+                key=lambda s: sandbox_conversation_counts.get(s.id, 0),
+            )
+
+        else:
+            # Default fallback - return first sandbox
+            return available_sandboxes[0]
+
+    async def _get_conversation_counts_by_sandbox(
+        self, sandbox_ids: list[str]
+    ) -> dict[str, int]:
+        """Get the count of conversations for each sandbox.
+
+        Args:
+            sandbox_ids: List of sandbox IDs to count conversations for
+
+        Returns:
+            Dictionary mapping sandbox_id to conversation count
+        """
+        try:
+            # Query count for each sandbox individually
+            # This is efficient since there are at most ~8 running sandboxes per user
+            counts: dict[str, int] = {}
+            for sandbox_id in sandbox_ids:
+                count = await self.app_conversation_info_service.count_app_conversation_info(
+                    sandbox_id__eq=sandbox_id
+                )
+                counts[sandbox_id] = count
+            return counts
+        except Exception as e:
+            _logger.warning(
+                f'Error counting conversations by sandbox: {e}', exc_info=True
+            )
+            # Return empty counts on error - will default to first sandbox
+            return {}
+
+    async def _filter_sandboxes_with_known_spec(
+        self, sandboxes: list[SandboxInfo]
+    ) -> list[SandboxInfo]:
+        """Return the sandboxes whose spec the spec service still resolves.
+
+        After an agent-server image bump runtime-api advertises only the
+        current image, so sandboxes on the previous image resolve to no spec.
+        Returns an empty list when none resolve or the lookup fails; the
+        caller then keeps its full list.
+        """
+        try:
+            # One lookup per distinct spec id; the dynamic spec service caches
+            # the runtime-api listing, so this is at most one request.
+            known: dict[str, bool] = {}
+            for sandbox in sandboxes:
+                spec_id = sandbox.sandbox_spec_id
+                if spec_id not in known:
+                    spec = await self.sandbox_spec_service.get_sandbox_spec(spec_id)
+                    known[spec_id] = spec is not None
+            return [s for s in sandboxes if known[s.sandbox_spec_id]]
+        except Exception as e:
+            _logger.warning(
+                f'Error checking sandbox specs for grouping: {e}', exc_info=True
+            )
+            return []
+
+    async def _wait_for_sandbox_start(
+        self, task: AppConversationStartTask
+    ) -> AsyncGenerator[AppConversationStartTask, None]:
+        """Wait for sandbox to start and return info."""
+        # Get or create the sandbox
+        if not task.request.sandbox_id:
+            # First try to find a running sandbox for the current user
+            sandbox = await self._find_running_sandbox_for_user()
+            if sandbox is None:
+                # No running sandbox found, start a new one
+
+                # Convert conversation_id to hex string if present
+                sandbox_id_str = (
+                    task.request.conversation_id.hex
+                    if task.request.conversation_id is not None
+                    else None
+                )
+
+                sandbox = await self.sandbox_service.start_sandbox(
+                    sandbox_id=sandbox_id_str,
+                    started_by=SandboxStartedBy.APP_CONVERSATION,
+                )
+            task.sandbox_id = sandbox.id
+        else:
+            sandbox_info = await self.sandbox_service.get_sandbox(
+                task.request.sandbox_id
+            )
+            if sandbox_info is None:
+                raise SandboxError(f'Sandbox not found: {task.request.sandbox_id}')
+            credential_org_id = await get_credential_org_id(self.user_context)
+            if sandbox_info.credential_org_id != credential_org_id or (
+                credential_org_id is None and self.app_mode == 'saas'
+            ):
+                raise SandboxError(
+                    'Sandbox is not available in the requested organization'
+                )
+            sandbox = sandbox_info
+
+        # Update the listener with sandbox info
+        task.status = AppConversationStartTaskStatus.WAITING_FOR_SANDBOX
+        task.sandbox_id = sandbox.id
+
+        # Log sandbox assignment for observability
+        conversation_id_str = (
+            str(task.request.conversation_id)
+            if task.request.conversation_id is not None
+            else 'unknown'
+        )
+        _logger.info(
+            f'Assigned sandbox {sandbox.id} to conversation {conversation_id_str}'
+        )
+
+        yield task
+
+        # Resume if paused
+        resumed = sandbox.status == SandboxStatus.PAUSED
+        if resumed:
+            await self.sandbox_service.resume_sandbox(sandbox.id)
+
+        # Check for immediate error states
+        if sandbox.status in (None, SandboxStatus.ERROR):
+            raise SandboxError(f'Sandbox status: {sandbox.status}')
+
+        # For non-STARTING/RUNNING states (except PAUSED which we just resumed), fail fast
+        if sandbox.status not in (
+            SandboxStatus.STARTING,
+            SandboxStatus.RUNNING,
+            SandboxStatus.PAUSED,
+        ):
+            raise SandboxError(f'Sandbox not startable: {sandbox.id}')
+
+        # Use shared wait_for_sandbox_running utility to poll for ready state
+        running = await self.sandbox_service.wait_for_sandbox_running(
+            sandbox.id,
+            timeout=self.sandbox_startup_timeout,
+            poll_interval=self.sandbox_startup_poll_frequency,
+            httpx_client=self.httpx_client,
+        )
+        if resumed and self.web_url:
+            # The resumed agent server refuses to hydrate a Codex conversation
+            # bound to the saved credential until its binding is re-sent.
+            await reactivate_sandbox_codex_credential_bindings(
+                self.httpx_client,
+                sandbox=running,
+                agent_server_url=self._get_agent_server_url(running),
+                web_url=self.web_url,
+            )
+
+    async def _mint_azure_devops_access_token(
+        self, task: AppConversationStartTask
+    ) -> None:
+        """Mint this conversation's Azure DevOps credential-helper exchange JWT.
+
+        Delivered per conversation (parity with how GitHub/GitLab re-embed their
+        token at every conversation start), not once per sandbox: the setup flow
+        writes it to a file the credential helper reads, and the request builder
+        registers the same string as a masked conversation secret. Because it is
+        minted per conversation, a conversation that reuses a running sandbox gets
+        its own fresh, masked credential. Only set when the user has an Entra (JWT)
+        Azure DevOps token and a ``web_url`` exists (the secrets endpoint lives
+        under it); left unset for every other user.
+        """
+        task._azure_devops_access_token = (
+            await _mint_azure_devops_access_token_for_user(
+                self.user_context, self.jwt_service, self.web_url
+            )
+        )
+
+    async def _mint_git_credential_access_tokens(
+        self, task: AppConversationStartTask
+    ) -> None:
+        """Mint this conversation's credential-helper exchange JWTs for the other
+        git providers, one per provider the user has a token for.
+
+        Each JWT is scoped to the user and that provider; the setup flow writes
+        them to per-provider files and installs a git credential helper for each
+        provider's host, which trades the JWT at ``GET /api/v1/webhooks/secrets``
+        for the user's current provider token on every git call. That way plain
+        git works on any repository the user can reach, from the agent's
+        terminal and from hooks, not only on the selected one, whose remote
+        embeds a token. Azure DevOps keeps its own per-organization helper
+        (``_mint_azure_devops_access_token``). Best-effort, like that one.
+        """
+        task._git_credential_access_tokens = (
+            await _mint_git_credential_access_tokens_for_user(
+                self.user_context,
+                self.jwt_service,
+                self._secret_lookup_url() if self.web_url else None,
+            )
+        )
+
+    async def restore_git_credentials_after_resume(
+        self, sandbox: SandboxInfo, workspace: AsyncRemoteWorkspace
+    ) -> None:
+        """Re-deliver this user's git credential helpers to a resumed sandbox.
+
+        The helpers, their global git config and the exchange JWTs they read
+        live under ``$HOME``, which a paused Kubernetes sandbox loses: resume
+        gives it a new pod on the same volumes. The JWTs would also have
+        expired after ``_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT``. The agent server
+        reloads auto-load marketplaces and plugins on the first message after
+        a resume, and without a helper a private marketplace cannot be cloned
+        again, so its sub-agents and hooks would be lost (OHE-3896). Mint fresh
+        JWTs for the sandbox's owner, install the helpers the way
+        ``run_setup_scripts`` does, and register the JWTs for output masking
+        in every conversation the sandbox hosts, like the request builders do
+        at start. The caller treats a failure as best effort.
+        """
+        tokens = await _mint_git_credential_access_tokens_for_user(
+            self.user_context,
+            self.jwt_service,
+            self._secret_lookup_url() if self.web_url else None,
+        )
+        azure_devops_token = await _mint_azure_devops_access_token_for_user(
+            self.user_context, self.jwt_service, self.web_url
+        )
+        if not tokens and not azure_devops_token:
+            return
+        await self._configure_git_credential_helpers(workspace, tokens)
+        await self._configure_azure_devops_git_credentials(
+            workspace, azure_devops_token, None
+        )
+        secrets: dict[str, StaticSecret] = {}
+        self._register_git_credential_access_token_secrets(secrets, tokens)
+        self._register_azure_devops_access_token_secret(secrets, azure_devops_token)
+        await self._mask_secrets_in_sandbox_conversations(sandbox, secrets)
+
+    async def _mask_secrets_in_sandbox_conversations(
+        self, sandbox: SandboxInfo, secrets: Mapping[str, StaticSecret]
+    ) -> None:
+        """Register ``secrets`` for output masking in every conversation on ``sandbox``.
+
+        A credential-helper JWT sits in a file the agent can print, so each
+        conversation masks the fresh one like the one minted at its start.
+        Best effort: failures are logged, never raised.
+        """
+        if not secrets or not sandbox.session_api_key:
+            return
+        agent_server_url = self._get_agent_server_url(sandbox).rstrip('/')
+        headers = {'X-Session-API-Key': sandbox.session_api_key}
+        # The agent server reads plain strings as static secrets.
+        payload = {
+            'secrets': {
+                name: secret.value.get_secret_value()
+                for name, secret in secrets.items()
+                if secret.value is not None
+            }
+        }
+        try:
+            async for info in iter_sandbox_conversations(
+                self.httpx_client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+            ):
+                response = await self.httpx_client.post(
+                    f'{agent_server_url}/api/conversations/{info.id}/secrets',
+                    json=payload,
+                    headers=headers,
+                    timeout=_RESUME_SECRETS_TIMEOUT_SECONDS,
+                )
+                if response.is_error:
+                    _logger.warning(
+                        'git_credentials:mask_after_resume_failed',
+                        extra={
+                            'sandbox_id': sandbox.id,
+                            'conversation_id': str(info.id),
+                            'status_code': response.status_code,
+                        },
+                    )
+        except Exception:
+            _logger.warning(
+                'git_credentials:mask_after_resume_failed',
+                extra={'sandbox_id': sandbox.id},
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _register_git_credential_access_token_secrets(
+        secrets: dict, git_credential_access_tokens: Mapping[str, str] | None
+    ) -> None:
+        """Register the per-provider credential-helper JWTs as masked secrets,
+        like ``_register_azure_devops_access_token_secret``."""
+        for provider, token in (git_credential_access_tokens or {}).items():
+            if not token:
+                continue
+            name = GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX + provider.upper()
+            secrets[name] = StaticSecret(
+                value=SecretStr(token),
+                description=f'{provider} git credential-helper access token',
+            )
+
+    @staticmethod
+    def _register_azure_devops_access_token_secret(
+        secrets: dict, azure_devops_access_token: str | None
+    ) -> None:
+        """Register this conversation's Azure DevOps JWT as a masked secret.
+
+        The helper reads the JWT from a file the agent can also read, so without
+        this it would appear unmasked if the agent printed the file.
+        ``SecretRegistry.mask_secrets_in_output`` resolves and masks every
+        registered secret value. Must be the exact string minted for this
+        conversation (see ``_mint_azure_devops_access_token``).
+        """
+        if not azure_devops_access_token:
+            return
+        secrets[AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE] = StaticSecret(
+            value=SecretStr(azure_devops_access_token),
+            description='Azure DevOps git credential-helper access token',
+        )
+
+    async def _seed_sandbox_profiles(
+        self,
+        agent_server_url: str,
+        session_api_key: str | None,
+        sandbox: SandboxInfo | None = None,
+    ) -> None:
+        """Mirror the user's saved LLM profiles into the sandbox profile store.
+
+        The agent's built-in ``switch_llm`` tool resolves profiles from the
+        sandbox filesystem; in SaaS they live on the app-server, so without this
+        the tool sees none. Upserts the current profiles (so adds/edits/renames
+        land) and prunes ones deleted on the app-server, keeping the sandbox in
+        sync. Best-effort: failures are logged, never raised, so they can't block
+        the conversation.
+        """
+        # Imported lazily: settings_router transitively imports this service, so
+        # a module-level import would be circular.
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        headers = {'X-Session-API-Key': session_api_key} if session_api_key else {}
+        base_url = f'{agent_server_url}/api/profiles'
+        try:
+            user = await self.user_context.get_user_info()
+            profiles = user.llm_profiles.profiles
+            settings_llm = getattr(user.agent_settings, 'llm', None)
+            if settings_llm is not None:
+                settings_llm = await self._maybe_refresh_managed_llm_key(
+                    user, settings_llm
+                )
+            fallback_api_key = getattr(settings_llm, 'api_key', None)
+            connections = await self.user_context.get_provider_connections()
+        except Exception:
+            _logger.exception(
+                'Failed to load profiles for sandbox %s',
+                agent_server_url,
+                stack_info=True,
+            )
+            return
+
+        # Upsert each profile independently so one failure can't dark the rest.
+        for name, profile_llm in profiles.items():
+            # Org profile names aren't character-restricted, so skip any the
+            # agent-server's store would reject — both to avoid a futile call and
+            # to keep an exotic name (e.g. ``..``) from path-injecting the api-key
+            # payload into a different request URL.
+            if not PROFILE_NAME_REGEX.match(name):
+                continue
+            try:
+                resolved = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=fallback_api_key,
+                    connections=connections,
+                )
+                resolved = detach_provider_connection(resolved)
+                if sandbox is not None:
+                    resolved = await customer_gateway_hooks.bind_profile_llm(
+                        resolved, sandbox
+                    )
+                response = await self.httpx_client.post(
+                    f'{base_url}/{name}',
+                    json={
+                        'include_secrets': True,
+                        'llm': resolved.model_dump(
+                            mode='json',
+                            exclude_none=True,
+                            context={'expose_secrets': True},
+                        ),
+                    },
+                    headers=headers,
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+            except Exception:
+                _logger.warning(
+                    'Failed to seed LLM profile %r into sandbox', name, exc_info=True
+                )
+
+        # Prune profiles deleted/renamed on the app-server so the agent can't
+        # switch to a stale one. Independent best-effort.
+        try:
+            listed = await self.httpx_client.get(
+                base_url, headers=headers, timeout=30.0
+            )
+            listed.raise_for_status()
+            stored = {p['name'] for p in listed.json().get('profiles', [])}
+            for stale_name in stored - set(profiles):
+                await self.httpx_client.delete(
+                    f'{base_url}/{stale_name}', headers=headers, timeout=30.0
+                )
+        except Exception:
+            _logger.warning('Failed to prune sandbox profiles', exc_info=True)
+
+    async def _activate_codex_credential_binding(
+        self,
+        request: AppConversationStartRequest,
+        user: UserInfo,
+        sandbox: SandboxInfo,
+        agent_server_url: str,
+        conversation_id: UUID,
+    ) -> None:
+        """Bind a Codex conversation's credential to the saved ``CODEX_AUTH_JSON``.
+
+        Registered before the create so the agent server consumes the binding at
+        create, keeps the rotated ChatGPT refresh token in sync with the saved
+        secret, and strips the plaintext copy the start request still carries
+        (OHE-3289). Skipped, leaving today's static copy, when there is no
+        callback URL, the request supplies its own ``CODEX_AUTH_JSON``, or the
+        user has no valid personal one to write a rotation back to (only an
+        authenticated user context owns a secrets store).
+        """
+        agent_settings = user.agent_settings
+        if not (
+            isinstance(agent_settings, ACPAgentSettings)
+            and agent_settings.acp_server == CODEX_ACP_SERVER
+        ):
+            return
+        if not self.web_url or not sandbox.session_api_key:
+            return
+        if request.secrets and CODEX_AUTH_SECRET_NAME in request.secrets:
+            return
+        if not isinstance(self.user_context, AuthUserContext):
+            return
+        # Best-effort like profile seeding: a failure here leaves the static
+        # copy in place rather than blocking the conversation.
+        try:
+            secrets_store = await self.user_context.user_auth.get_secrets_store()
+            secrets = await secrets_store.load_personal()
+            secret = (
+                secrets.custom_secrets.get(CODEX_AUTH_SECRET_NAME) if secrets else None
+            )
+            if secret is None or not is_valid_codex_auth(
+                secret.secret.get_secret_value()
+            ):
+                return
+            await activate_codex_credential_binding(
+                self.httpx_client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+                callback_url=credential_binding_callback_url(self.web_url, sandbox.id),
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            _logger.warning(
+                'Failed to bind the Codex credential for conversation %s',
+                conversation_id,
+                exc_info=True,
+            )
+
+    def _get_agent_server_url(self, sandbox: SandboxInfo) -> str:
+        """Get agent server url for running sandbox."""
+        exposed_urls = sandbox.exposed_urls
+        assert exposed_urls is not None
+        agent_server_url = next(
+            exposed_url.url
+            for exposed_url in exposed_urls
+            if exposed_url.name == AGENT_SERVER
+        )
+        agent_server_url = sandbox_url_for_app_server(agent_server_url)
+        return agent_server_url
+
+    async def _ensure_profile_runtime(
+        self,
+        url: str,
+        api_key: str | None,
+        agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
+    ) -> SandboxRuntime:
+        """Return the runtime's browser availability and SDK; reject what it cannot run.
+
+        A sandbox on openhands-sdk <1.54.0 (one created before an image bump)
+        still runs an ordinary launch, so that proceeds with a warning rather
+        than stranding the sandbox. Only launches that need the newer runtime
+        (see ``_profile_runtime_requirement``) fail fast.
+        """
+        response = await self.httpx_client.get(
+            f'{url}/server_info',
+            headers={'X-Session-API-Key': api_key} if api_key else {},
+            timeout=self.sandbox_startup_timeout,
+        )
+        response.raise_for_status()
+        info = response.json()
+        reported = info.get('sdk_version')
+        try:
+            compatible = isinstance(reported, str) and Version(reported) >= Version(
+                '1.54.0'
+            )
+        except InvalidVersion:
+            compatible = False
+        if not compatible:
+            requirement = _profile_runtime_requirement(agent_settings)
+            if requirement:
+                raise SandboxError(
+                    f'This sandbox requires openhands-sdk >=1.54.0 to launch {requirement}. '
+                    'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+                )
+            _logger.warning(
+                'Sandbox %s reports openhands-sdk %s (<1.54.0); launching without '
+                'Agent Profile runtime support',
+                url,
+                reported,
+            )
+
+        return SandboxRuntime(
+            browser_available=BROWSER_TOOL_NAME in info.get('usable_tools', []),
+            sdk_version=reported if isinstance(reported, str) else None,
+        )
+
+    def _inherit_configuration_from_parent(
+        self, request: AppConversationStartRequest, parent_info: AppConversationInfo
+    ) -> None:
+        """Inherit parent settings unless the request overrides them."""
+        inherit_profile = request.agent_profile_id is None
+        parent_profile = parent_info.launched_agent_profile
+        if request.agent_profile_id is None and isinstance(
+            parent_profile, LaunchedAgentProfile
+        ):
+            request.agent_profile_id = str(parent_profile.agent_profile_id)
+
+        # Inherit sandbox_id from parent to share the same workspace/environment
+        if not request.sandbox_id:
+            request.sandbox_id = parent_info.sandbox_id
+
+        # Inherit git parameters from parent if not provided
+        if not request.selected_repository:
+            request.selected_repository = parent_info.selected_repository
+            if request.additional_repositories is None:
+                request.additional_repositories = [
+                    AdditionalRepositoryRequest(
+                        repository=repo.repository,
+                        branch=repo.branch,
+                        git_provider=repo.git_provider,
+                    )
+                    for repo in parent_info.additional_repositories
+                    if repo.git_provider is not None
+                ] or None
+        if not request.selected_branch:
+            request.selected_branch = parent_info.selected_branch
+        if not request.git_provider:
+            request.git_provider = parent_info.git_provider
+
+        # Inherit LLM model from parent if not provided
+        if inherit_profile and not request.llm_model and parent_info.llm_model:
+            request.llm_model = parent_info.llm_model
+
+    def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
+        """Default the trigger when the caller did not supply one.
+
+        Mirrors the V0 endpoint: bearer (API key) auth is ``REMOTE_API_KEY``,
+        everything else is ``GUI``.
+        """
+        if request.trigger is not None:
+            return
+        user_auth = getattr(self.user_context, 'user_auth', None)
+        auth_type = user_auth.get_auth_type() if user_auth is not None else None
+        if auth_type == AuthType.BEARER:
+            request.trigger = ConversationTrigger.REMOTE_API_KEY
+        else:
+            request.trigger = ConversationTrigger.GUI
+
+    def _apply_suggested_task(self, request: AppConversationStartRequest) -> None:
+        """Apply suggested task defaults to the start request."""
+        suggested_task: SuggestedTask | None = request.suggested_task
+        if not suggested_task:
+            return
+
+        if request.initial_message is not None:
+            raise ValueError(
+                'initial_message cannot be provided when suggested_task is present'
+            )
+
+        prompt = suggested_task.get_prompt_for_task()
+        if not prompt:
+            raise ValueError(
+                f'Suggested task returned empty prompt for task type {suggested_task.task_type}'
+            )
+        request.initial_message = SendMessageRequest(
+            role='user',
+            content=[TextContent(text=prompt)],
+        )
+        request.trigger = ConversationTrigger.SUGGESTED_TASK
+
+        if not request.selected_repository:
+            request.selected_repository = suggested_task.repo
+        if not request.git_provider:
+            request.git_provider = suggested_task.git_provider
+
+    def _compute_plan_path(
+        self,
+        working_dir: str,
+        git_provider: ProviderType | None,
+    ) -> str:
+        """Compute the PLAN.md path based on provider type.
+
+        Args:
+            working_dir: The workspace working directory
+            git_provider: The git provider type (GitHub, GitLab, Azure DevOps, etc.)
+
+        Returns:
+            Absolute path to PLAN.md file in the appropriate config directory
+        """
+        # GitLab and Azure DevOps use agents-tmp-config (since .agents_tmp is invalid)
+        if git_provider in (ProviderType.GITLAB, ProviderType.AZURE_DEVOPS):
+            config_dir = 'agents-tmp-config'
+        else:
+            config_dir = '.agents_tmp'
+
+        return f'{working_dir}/{config_dir}/PLAN.md'
+
+    async def _launch_custom_secrets(self, user: UserInfo) -> dict:
+        """Custom secrets the conversation launches with.
+
+        The member's personal secrets merged with the org's shared ones, as
+        ``user_context.get_secrets()`` returns them — unless the launched Agent
+        Profile is org-scoped. An org profile is shared configuration, so it
+        launches with the org-shared secrets only, never with a member's
+        personal secrets (OHE-3088): every shared secret when the profile sets
+        no ``secret_refs`` ("no profile restriction", OHE-3935), otherwise the
+        listed names, resolved against the shared secrets rather than a
+        member's personal secret of the same name; the system-managed
+        ``OPENHANDS_API_KEY`` stays available. Should the effective org be
+        unknown (not a cloud/SaaS context), the org profile gets no custom
+        secrets rather than the member's.
+        """
+        secrets = await self.user_context.get_secrets()
+        if getattr(user, 'active_agent_profile_scope', None) != 'org':
+            return secrets
+
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        org_id = await get_effective_org_id() if get_effective_org_id else None
+        shared: dict[str, Any] = {}
+        if org_id is None:
+            _logger.warning(
+                'agent_profile_org_secrets:missing_effective_org',
+                extra={'user_id': user.id},
+            )
+        else:
+            from storage.org_secrets_store import OrgSecretsStore
+
+            store = await OrgSecretsStore.get_instance(org_id)
+            shared = await store.load_shared_values()
+        secret_refs = getattr(user, 'active_agent_profile_secret_refs', None)
+        if isinstance(secret_refs, list):
+            allowed = set(secret_refs)
+            unresolved = sorted(allowed - set(shared))
+            if unresolved:
+                # A ref the org no longer shares (or never did): the agent runs
+                # without that secret, so leave a trace for the operator.
+                _logger.warning(
+                    'agent_profile_org_secrets:unresolved_refs',
+                    extra={'user_id': user.id, 'secret_names': unresolved},
+                )
+            shared = {
+                name: secret for name, secret in shared.items() if name in allowed
+            }
+        scoped: dict = {
+            name: StaticSecret(
+                value=secret.secret, description=secret.description or None
+            )
+            for name, secret in shared.items()
+        }
+        if 'OPENHANDS_API_KEY' in secrets:
+            scoped['OPENHANDS_API_KEY'] = secrets['OPENHANDS_API_KEY']
+        return scoped
+
+    async def _setup_secrets_for_git_providers(self, user: UserInfo) -> dict:
+        """Set up secrets for all git provider authentication.
+
+        Args:
+            user: User information containing authentication details
+
+        Returns:
+            Dictionary of secrets for the conversation
+        """
+        secrets = await self._launch_custom_secrets(user)
+        secrets.update(
+            await self._get_provider_token_secrets(user, self._secret_lookup_url())
+        )
+        return secrets
+
+    def _secret_lookup_url(self) -> str | None:
+        """The webhook secrets URL, when the sandbox can call back to it."""
+        return secret_lookup_url(
+            self.web_url,
+            remote_sandboxes=isinstance(self.sandbox_service, RemoteSandboxService),
+        )
+
+    async def _get_provider_token_secrets(
+        self, user: UserInfo, lookup_url: str | None
+    ) -> dict[str, SecretSource]:
+        """Secrets carrying the user's git provider and OAuth tokens.
+
+        With named OAuth secrets in use, each linked provider's token is
+        exposed under its ``named_secret``; ``<PROVIDER_TYPE>_TOKEN`` remains
+        only for provider types the user has no OAuth v2 token for. Each is a
+        ``LookupSecret`` against ``lookup_url``, or a ``StaticSecret`` holding
+        the current token (which then never refreshes) when it is ``None``.
+        """
+        secrets: dict[str, SecretSource] = {}
+        provider_tokens = cast(
+            PROVIDER_TOKEN_TYPE | None,
+            await self.user_context.get_provider_tokens(),
+        )
+        named_oauth_secrets = await self.user_context.get_named_oauth_secrets()
+
+        for provider_type, provider_token in (provider_tokens or {}).items():
+            if not provider_token.token:
+                continue
+            if (
+                named_oauth_secrets is not None
+                and provider_type in named_oauth_secrets.linked_provider_types
+            ):
+                continue
+            secret_name = ProviderHandler.get_provider_env_key(provider_type)
+            description = f'{provider_type.name} authentication token'
+            if lookup_url:
+                secrets[secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'provider_type': provider_type.value},
+                    description,
+                )
+                continue
+            static_token = await self.user_context.get_latest_token(provider_type)
+            if static_token:
+                secrets[secret_name] = StaticSecret(
+                    value=SecretStr(static_token), description=description
+                )
+
+        for named in named_oauth_secrets.secrets if named_oauth_secrets else ():
+            if lookup_url:
+                secrets[named.secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'oauth_provider_id': named.oauth_provider_id},
+                    named.description,
+                )
+                continue
+            value = await self.user_context.get_named_oauth_secret_value(
+                named.oauth_provider_id
+            )
+            if value:
+                secrets[named.secret_name] = StaticSecret(
+                    value=SecretStr(value), description=named.description
+                )
+        return secrets
+
+    def _lookup_secret(
+        self, lookup_url: str, payload: dict[str, Any], description: str
+    ) -> LookupSecret:
+        access_token = self.jwt_service.create_jws_token(
+            payload=payload,
+            expires_in=self.access_token_hard_timeout,
+            audience=JwtAudience.SECRET_LOOKUP,
+        )
+        return LookupSecret(
+            url=lookup_url,
+            headers={'X-Access-Token': access_token},
+            description=description,
+        )
+
+    async def _maybe_append_route_at_start_instruction(
+        self, request: AppConversationStartRequest
+    ) -> None:
+        """Append the route-on-first-message instruction when the org asks for it.
+
+        The toggle lives on the org's Model Router envelope
+        (``org.meta_profiles.run_at_conversation_start``), set from the OHE
+        Model Router settings page.
+        """
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        if get_effective_org_id is None:
+            return
+        org_id = await get_effective_org_id()
+        if org_id is None:
+            return
+        # Imported lazily: ``storage`` transitively imports this service.
+        from storage.agent_profile_resolution import load_meta_profiles
+        from storage.org_store import OrgStore
+
+        org = await OrgStore.get_org_by_id_async(org_id)
+        if org is None or not load_meta_profiles(org).run_at_conversation_start:
+            return
+        request.system_message_suffix = '\n\n'.join(
+            part
+            for part in (
+                request.system_message_suffix,
+                ROUTE_AT_CONVERSATION_START_INSTRUCTION,
+            )
+            if part
+        )
+
+    async def _setup_conversation_secrets(
+        self,
+        user: UserInfo,
+        trigger: ConversationTrigger | None,
+        system_message_suffix: str | None,
+    ) -> tuple[dict, str | None]:
+        """Set up custom, git provider, and integration-scoped secrets.
+
+        Args:
+            user: User information containing authentication details
+            trigger: Trigger that started the conversation.
+            system_message_suffix: Current system message suffix.
+
+        Returns:
+            Tuple of secrets and updated system message suffix.
+        """
+        secrets = await self._setup_secrets_for_git_providers(user)
+
+        enrichment = await self.conversation_secret_enricher.enrich(
+            user_context=self.user_context,
+            user=user,
+            trigger=trigger,
+            system_message_suffix=system_message_suffix,
+            web_url=self.web_url,
+            jwt_service=self.jwt_service,
+            access_token_hard_timeout=self.access_token_hard_timeout,
+        )
+        for name, source in enrichment.secrets.items():
+            if name in secrets:
+                _logger.warning(
+                    'Integration-provided secret %r overrides existing secret', name
+                )
+            secrets[name] = source
+
+        return secrets, enrichment.system_message_suffix
+
+    def _configure_llm(self, user: UserInfo, llm_model: str | None) -> LLM:
+        """Configure LLM settings.
+
+        Starts from the user's saved LLM configuration and overrides only
+        the fields that the server needs to resolve (model name, base URL,
+        and usage ID).  All other user-configured fields (e.g.
+        ``reasoning_effort``, ``extended_thinking_budget``, ``drop_params``)
+        are preserved so that they reach the agent-server unchanged.
+
+        Args:
+            user: User information containing LLM preferences
+            llm_model: Optional specific model to use, falls back to user default
+
+        Returns:
+            Configured LLM instance
+        """
+        # ACP conversations return before the LLM is configured.
+        assert isinstance(user.agent_settings, OpenHandsAgentSettings)
+        user_llm = user.agent_settings.llm
+        model: str = llm_model or user_llm.model or LLM.model_fields['model'].default
+
+        base_url = resolve_provider_llm_base_url(
+            model,
+            user_llm.base_url,
+            provider_base_url=self.openhands_provider_base_url,
+        )
+
+        return user_llm.model_copy(
+            update={
+                'model': model,
+                'base_url': base_url,
+                'api_key': user_llm.api_key,
+                'usage_id': 'agent',
+                # Force streaming on (the SDK LLM defaults stream=False).
+                'stream': True,
+            }
+        )
+
+    async def _maybe_refresh_managed_llm_key(self, user: UserInfo, llm: LLM) -> LLM:
+        """Best-effort refresh for stale SaaS managed LiteLLM keys.
+
+        Uses the current member's managed key if a concurrent start replaced
+        the captured credential. A managed LLM launched with no usable key
+        (the launch view drops a custom key that must not reach the proxy)
+        gets the member's managed key, minted if the member has none.
+        BYOK/custom keys and OSS/local deployments are left untouched.
+        """
+        _logger.debug(
+            'managed_llm_key_refresh:evaluate',
+            extra={
+                'app_mode': self.app_mode,
+                'user_id': user.id,
+                'model': llm.model,
+                'base_url': str(llm.base_url or ''),
+                'has_api_key': bool(llm.api_key),
+            },
+        )
+
+        if self.app_mode != 'saas':
+            _logger.debug(
+                'managed_llm_key_refresh:skip_non_saas',
+                extra={'app_mode': self.app_mode, 'user_id': user.id},
+            )
+            return llm
+
+        if not user.id:
+            _logger.debug(
+                'managed_llm_key_refresh:skip_prerequisite',
+                extra={'has_user_id': bool(user.id), 'model': llm.model},
+            )
+            return llm
+
+        try:
+            from storage.lite_llm_manager import (  # type: ignore[import-not-found]
+                LiteLlmManager,
+            )
+            from storage.saas_settings_store import (  # type: ignore[import-not-found]
+                ManagedLlmKeyStatus,
+                SaasSettingsStore,
+                managed_llm_key_config_from_model,
+            )
+        except Exception:
+            _logger.warning(
+                'managed_llm_key_refresh:dependency_import_failed',
+                extra={'user_id': user.id, 'model': llm.model},
+                exc_info=True,
+            )
+            return llm
+
+        managed_config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
+        if managed_config is None:
+            _logger.debug(
+                'managed_llm_key_refresh:skip_non_managed_base_url',
+                extra={
+                    'user_id': user.id,
+                    'model': llm.model,
+                    'base_url': llm.base_url,
+                },
+            )
+            return llm
+
+        if llm.api_key is None:
+            key = ''
+        elif isinstance(llm.api_key, SecretStr):
+            key = llm.api_key.get_secret_value()
+        else:
+            key = str(llm.api_key)
+        # A masked key is a placeholder, not a credential.
+        has_usable_key = bool(key) and key != '**********'
+
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        if get_effective_org_id is None:
+            _logger.debug(
+                'managed_llm_key_refresh:skip_missing_effective_org_getter',
+                extra={'user_id': user.id, 'model': llm.model},
+            )
+            return llm
+
+        try:
+            org_id = await get_effective_org_id()
+            if org_id is None:
+                _logger.debug(
+                    'managed_llm_key_refresh:skip_missing_effective_org',
+                    extra={'user_id': user.id, 'model': llm.model},
+                )
+                return llm
+
+            _logger.debug(
+                'managed_llm_key_refresh:checking_current_key',
+                extra={
+                    'user_id': user.id,
+                    'org_id': str(org_id),
+                    'model': llm.model,
+                    'base_url': llm.base_url,
+                },
+            )
+            settings_store = await SaasSettingsStore.get_instance(
+                user.id, effective_org_id=org_id
+            )
+            # Heal orgs left broken by #421: a stale org-level BYOR key shadows
+            # the member's managed key. PR #425 prevents new occurrences; this
+            # restores already-broken users on their next load. Clearing the
+            # stale field flips the effective key off the dummy, then we
+            # force-rotate a fresh managed key so the returned LLM carries it
+            # (otherwise the existing verify path would skip on key mismatch).
+            # Gate to the All-Hands-managed cloud: ``app_mode == 'saas'`` is also
+            # true on self-hosted OHE, where clearing an org-level key breaks a
+            # legitimately managed enterprise org. ``DEPLOYMENT_MODE`` is the axis
+            # that actually separates cloud from self-hosted.
+            from server.constants import DEPLOYMENT_MODE
+
+            if (
+                DEPLOYMENT_MODE == 'cloud'
+                and await settings_store.clear_stale_org_level_llm_key_if_managed()
+            ):
+                _logger.info(
+                    'managed_llm_key_refresh:cleared_stale_org_level_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                # Clearing the stale org-level shadow is the heal; we still need
+                # the returned LLM to carry a valid managed key on *this* request.
+                # Prefer a freshly rotated key, but if rotation yields none
+                # (MISSING_MEMBER / already-current / LiteLLM transient) fall back
+                # to re-resolving the effective key off the now-healed DB. Without
+                # this re-resolve we'd drop through to the mismatch bail below and
+                # return the original stale llm — healing the DB but not the
+                # in-flight request, so the 401 would persist until the next load.
+                rotation = await settings_store.rotate_managed_llm_key()
+                healed_key: str | None = (
+                    rotation.new_key
+                    if rotation.status == ManagedLlmKeyStatus.ROTATED
+                    and rotation.new_key
+                    else await settings_store.get_current_managed_llm_key()
+                )
+                if healed_key:
+                    _logger.info(
+                        'managed_llm_key_refresh:healed_after_clear',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                            'rotation_status': getattr(rotation, 'status', None),
+                            'openhands_type': getattr(rotation, 'openhands_type', None),
+                        },
+                    )
+                    self.user_context.invalidate_user_info_cache()
+                    return llm.model_copy(update={'api_key': SecretStr(healed_key)})
+                _logger.warning(
+                    'managed_llm_key_refresh:cleared_without_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'rotation_status': getattr(rotation, 'status', None),
+                    },
+                )
+            if not has_usable_key:
+                # No key to refresh: ``load()`` dropped a custom key from a
+                # managed launch LLM, ``_start_app_conversation`` dropped a BYOR
+                # launch key from a managed ``llm_profile``, or the member has
+                # no key at all. Classify by the launch LLM, not the member's
+                # active profile (an Agent Profile can point them at different
+                # LLMs): reuse the member's managed key when the slot holds a
+                # valid one, otherwise mint one, replacing a custom key.
+                managed_key = await settings_store.get_current_managed_llm_key(llm=llm)
+                if managed_key is not None:
+                    key_is_valid = await LiteLlmManager.verify_existing_key(
+                        managed_key,
+                        user.id,
+                        str(org_id),
+                        openhands_type=managed_config.openhands_type,
+                    ) and await LiteLlmManager.verify_key(managed_key, user.id)
+                    if not key_is_valid:
+                        rotation = await settings_store.rotate_managed_llm_key(
+                            llm=llm, only_if_current=managed_key
+                        )
+                        managed_key = (
+                            rotation.new_key
+                            if rotation.status == ManagedLlmKeyStatus.ROTATED
+                            else None
+                        )
+                else:
+                    rotation = await settings_store.rotate_managed_llm_key(
+                        llm=llm, replace_custom_key=True
+                    )
+                    managed_key = (
+                        rotation.new_key
+                        if rotation.status == ManagedLlmKeyStatus.ROTATED
+                        else None
+                    )
+                if not managed_key:
+                    _logger.warning(
+                        'managed_llm_key_refresh:no_managed_key_for_keyless_launch',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                        },
+                    )
+                    return llm
+                _logger.info(
+                    'managed_llm_key_refresh:attached_managed_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'openhands_type': managed_config.openhands_type,
+                    },
+                )
+                self.user_context.invalidate_user_info_cache()
+                return llm.model_copy(update={'api_key': SecretStr(managed_key)})
+
+            managed_key = await settings_store.get_current_managed_llm_key()
+            if managed_key is None:
+                _logger.debug(
+                    'managed_llm_key_refresh:skip_no_current_managed_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                return llm
+            if managed_key != key:
+                _logger.debug(
+                    'managed_llm_key_refresh:use_current_member_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                key = managed_key
+                llm = llm.model_copy(update={'api_key': SecretStr(key)})
+                self.user_context.invalidate_user_info_cache()
+
+            key_belongs_to_user = await LiteLlmManager.verify_existing_key(
+                key,
+                user.id,
+                str(org_id),
+                openhands_type=managed_config.openhands_type,
+            )
+            key_is_valid = key_belongs_to_user and await LiteLlmManager.verify_key(
+                key, user.id
+            )
+            if key_is_valid:
+                _logger.debug(
+                    'managed_llm_key_refresh:skip_key_still_valid',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                return llm
+
+            _logger.info(
+                'managed_llm_key_refresh:stale_key_detected',
+                extra={'user_id': user.id, 'org_id': str(org_id), 'model': llm.model},
+            )
+            # Pass the stale key so overlapping refreshes are idempotent: if a
+            # concurrent start already rotated it, reuse that fresh key instead
+            # of rotating again and orphaning the sandbox's key (enterprise#439).
+            rotation = await settings_store.rotate_managed_llm_key(only_if_current=key)
+            if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
+                _logger.info(
+                    'managed_llm_key_refresh:rotated',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'openhands_type': getattr(rotation, 'openhands_type', None),
+                    },
+                )
+                self.user_context.invalidate_user_info_cache()
+                return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
+
+            _logger.warning(
+                'managed_llm_key_refresh:rotation_not_applied',
+                extra={
+                    'user_id': user.id,
+                    'org_id': str(org_id),
+                    'model': llm.model,
+                    'status': rotation.status,
+                    'has_new_key': bool(rotation.new_key),
+                },
+            )
+        except Exception:
+            _logger.warning(
+                'Failed to refresh stale managed LLM key before conversation startup',
+                extra={'user_id': user.id, 'model': llm.model},
+                exc_info=True,
+            )
+        return llm
+
+    async def _add_system_mcp_servers(
+        self, mcp_servers: dict[str, MCPServer], conversation_id: UUID
+    ) -> None:
+        """Add system-generated MCP servers (default OpenHands server).
+
+        The default server includes the Tavily search proxy if configured.
+        Tavily search is proxied through the app server to avoid exposing
+        the API key to sandboxes.
+
+        Args:
+            mcp_servers: Dictionary to add servers to
+            conversation_id: Conversation ID forwarded to the OpenHands MCP server
+        """
+        if not self.web_url:
+            return
+
+        headers = {'X-OpenHands-ServerConversation-ID': SecretStr(str(conversation_id))}
+
+        # Add API key if available
+        mcp_api_key = await self.user_context.get_mcp_api_key()
+        if mcp_api_key:
+            headers['X-Session-API-Key'] = SecretStr(mcp_api_key)
+
+        # Add default OpenHands MCP server (includes Tavily proxy if configured)
+        mcp_url = f'{self.web_url}/mcp/mcp'
+        mcp_servers['default'] = MCPServer(
+            url=mcp_url,
+            headers=headers,
+        )
+
+    @staticmethod
+    def _drop_unconnected_org_mcp_servers(
+        user_mcp: dict[str, MCPServer],
+        user: UserInfo,
+        secrets: Mapping[str, Any] | None,
+    ) -> dict[str, MCPServer]:
+        """Leave out the org listings this member has not connected to (OHE-3091).
+
+        A ``user``-managed organization listing references the member's
+        personal secret with ``${NAME}``, or authenticates with OAuth under
+        the member's own account. The sandbox keeps a reference no secret
+        satisfies literally, and cannot run a browser consent flow, so either
+        way the server would fail to authenticate: while a required reference
+        is missing from the conversation's final ``secrets``, or an OAuth
+        listing carries no tokens for this member, the listing is skipped with
+        a warning. ``None`` secrets means unknown and skips the reference
+        check only.
+        """
+        unconnected = getattr(user, 'org_user_managed_mcp_server_names', None)
+        if not unconnected:
+            return user_mcp
+        available = set(secrets) if secrets is not None else None
+        skipped: set[str] = set()
+        for name in unconnected:
+            server = user_mcp.get(name)
+            if server is None:
+                continue
+            oauth = server.oauth_auth
+            if oauth is not None:
+                tokens = oauth.state.tokens if oauth.state is not None else None
+                if tokens is None or tokens.access_token is None:
+                    skipped.add(name)
+                    _logger.warning(
+                        'org_mcp_server:skipped_unauthorized',
+                        extra={
+                            'user_id': getattr(user, 'id', None),
+                            'server_name': name,
+                        },
+                    )
+                continue
+            if available is None:
+                continue
+            missing = mcp_server_secret_references(server).required - available
+            if missing:
+                skipped.add(name)
+                _logger.warning(
+                    'org_mcp_server:skipped_unconnected',
+                    extra={
+                        'user_id': getattr(user, 'id', None),
+                        'server_name': name,
+                        'secret_names': sorted(missing),
+                    },
+                )
+        if not skipped:
+            return user_mcp
+        return {
+            name: server for name, server in user_mcp.items() if name not in skipped
+        }
+
+    def _merge_custom_mcp_config(
+        self,
+        mcp_servers: dict[str, MCPServer],
+        user: UserInfo,
+        secrets: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Merge custom MCP configuration from user settings.
+
+        Args:
+            mcp_servers: Dictionary to add servers to
+            user: User information containing custom MCP config
+            secrets: The conversation's final secrets, used to leave out the
+                organization listings this member has not connected to
+
+        Handles both OpenHands and ACP agent settings: a resolved ACP profile's
+        ref-filtered ``mcp_config`` rides on ``ACPAgentSettings.mcp_config`` and
+        must reach ``create_agent`` (the ACP-only early-return that previously
+        dropped it is gone — SDK#3705 remainder, #15044 §7).
+        """
+        user_mcp = user.agent_settings.mcp_config
+        if not user_mcp:
+            return
+
+        try:
+            user_mcp = self._drop_unconnected_org_mcp_servers(user_mcp, user, secrets)
+            count = len(user_mcp)
+            _logger.info(
+                f'Loading custom MCP config from user settings: {count} servers'
+            )
+            mcp_servers.update(user_mcp)
+
+        except Exception:
+            _logger.exception(
+                'Error loading custom MCP config from user settings',
+                stack_info=True,
+            )
+            # Continue with system config only, don't fail conversation startup
+            _logger.warning(
+                'Continuing with system-generated MCP config only due to custom config error'
+            )
+
+    async def _configure_llm_and_mcp(
+        self,
+        user: UserInfo,
+        llm_model: str | None,
+        conversation_id: UUID,
+        secrets: Mapping[str, Any] | None = None,
+    ) -> tuple[LLM, dict[str, MCPServer]]:
+        """Configure LLM and MCP (Model Context Protocol) settings.
+
+        Args:
+            user: User information containing LLM preferences
+            llm_model: Optional specific model to use, falls back to user default
+            conversation_id: Conversation ID forwarded to the OpenHands MCP server
+            secrets: The conversation's final secrets (see
+                ``_merge_custom_mcp_config``)
+
+        Returns:
+            Tuple of (configured LLM instance, MCP config dict in the flat
+            ``{server_name: server_dict}`` shape the SDK 1.31.x
+            ``Agent.mcp_config`` field expects)
+        """
+        # Configure LLM
+        llm = self._configure_llm(user, llm_model)
+        _logger.debug(
+            'managed_llm_key_refresh:configured_llm',
+            extra={
+                'user_id': user.id,
+                'conversation_id': str(conversation_id),
+                'model': llm.model,
+                'base_url': str(llm.base_url or ''),
+                'has_api_key': bool(llm.api_key),
+                'llm_model_override': llm_model,
+            },
+        )
+        llm = await self._maybe_refresh_managed_llm_key(user, llm)
+        # Detach after the refresh: it reads the link to treat a linked LLM as
+        # BYOK. The connection's key and base_url are already applied, by
+        # settings load or by the ``llm_profile`` resolution.
+        llm = detach_provider_connection(llm)
+
+        mcp_servers: dict[str, MCPServer] = {}
+
+        # Add system-generated servers (default MCP server with Tavily proxy)
+        await self._add_system_mcp_servers(mcp_servers, conversation_id)
+
+        # Merge custom servers from user settings
+        self._merge_custom_mcp_config(mcp_servers, user, secrets)
+
+        return llm, mcp_servers
+
+    @staticmethod
+    def _build_observability_context(
+        conversation_id: UUID,
+        *,
+        agent_kind: str,
+        selected_repository: str | None = None,
+        selected_branch: str | None = None,
+        git_provider: ProviderType | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Build trace metadata and tag filters for a conversation.
+
+        Metadata uses explicit field names such as ``repo_name`` and
+        ``selected_branch``. Tags intentionally keep the concise
+        ``repo:`` / ``branch:`` prefixes used by LiteLLM metadata filters.
+        """
+        metadata: dict[str, Any] = {
+            'app': 'openhands',
+            'conversation_id': str(conversation_id),
+            'agent_kind': agent_kind,
+        }
+        tags = ['app:openhands', f'agent_kind:{agent_kind}']
+
+        if selected_repository:
+            metadata['repo_name'] = selected_repository
+            tags.append(f'repo:{selected_repository}')
+        if selected_branch:
+            metadata['selected_branch'] = selected_branch
+            tags.append(f'branch:{selected_branch}')
+        if git_provider:
+            provider = git_provider.value
+            metadata['git_provider'] = provider
+            tags.append(f'git_provider:{provider}')
+
+        return metadata, tags
+
+    @staticmethod
+    def _extend_observability_metadata(
+        target: dict[str, Any], metadata: Mapping[str, Any]
+    ) -> None:
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if isinstance(value, str) and value == '':
+                continue
+            if key in target:
+                if target[key] != value:
+                    _logger.warning(
+                        'Conflicting observability metadata for %s (existing=%r, incoming=%r); keeping existing value',
+                        key,
+                        target[key],
+                        value,
+                    )
+                continue
+            target[key] = value
+
+    @staticmethod
+    def _extend_observability_tags(target: list[str], tags: Sequence[str]) -> None:
+        seen = set(target)
+        for tag in tags:
+            if tag in seen:
+                continue
+            target.append(tag)
+            seen.add(tag)
+
+    @staticmethod
+    def _apply_server_agent_overrides(
+        agent: Agent,
+        agent_type: AgentType,
+        conversation_id: UUID,
+        user_id: str | None,
+        repo_name: str | None = None,
+        git_provider: ProviderType | None = None,
+        selected_branch: str | None = None,
+        system_prompt: str | None = None,
+    ) -> Agent:
+        """Apply server-only fields that have no place in ``AgentSettings``.
+
+        * System prompt: an inline ``system_prompt`` from the start request,
+          else the filename / kwargs (planning vs default agent).
+        * LLM tracing metadata for SaaS analytics.
+        """
+        overrides: dict[str, Any] = {}
+        if system_prompt is not None:
+            # The inline prompt replaces the built-in static prompt verbatim;
+            # the SDK still appends the dynamic block (skills, suffix, secrets).
+            # The SDK rejects an inline prompt alongside a non-default
+            # system_prompt_filename, so the planning preset is not selected
+            # here — PLAN keeps its tools and the PLANNING_AGENT_INSTRUCTION
+            # riding system_message_suffix.
+            overrides['system_prompt'] = system_prompt
+        elif agent_type == AgentType.PLAN:
+            overrides['system_prompt_filename'] = 'system_prompt_planning.j2'
+            overrides['system_prompt_kwargs'] = {
+                'plan_structure': format_plan_structure()
+            }
+        else:
+            overrides['system_prompt_kwargs'] = {'cli_mode': False}
+
+        # LLM tracing metadata for openhands/ models
+        if should_set_litellm_extra_body(agent.llm.model):
+            llm_metadata = get_llm_metadata(
+                model_name=agent.llm.model,
+                llm_type=agent.llm.usage_id or 'agent',
+                conversation_id=conversation_id,
+                user_id=user_id,
+                repo_name=repo_name,
+                git_provider=git_provider.value if git_provider else None,
+                selected_branch=selected_branch,
+            )
+            overrides['llm'] = agent.llm.model_copy(
+                update={'litellm_extra_body': {'metadata': llm_metadata}}
+            )
+
+        # Condenser LLM tracing
+        if agent.condenser is not None and hasattr(agent.condenser, 'llm'):
+            condenser_llm = agent.condenser.llm
+            condenser_updates: dict[str, Any] = {}
+            if not condenser_llm.usage_id or condenser_llm.usage_id == 'agent':
+                condenser_updates['usage_id'] = 'condenser'
+            if should_set_litellm_extra_body(condenser_llm.model):
+                condenser_metadata = get_llm_metadata(
+                    model_name=condenser_llm.model,
+                    llm_type='condenser',
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    repo_name=repo_name,
+                    git_provider=git_provider.value if git_provider else None,
+                    selected_branch=selected_branch,
+                )
+                condenser_updates['litellm_extra_body'] = {
+                    'metadata': condenser_metadata
+                }
+            if condenser_updates:
+                updated_condenser = agent.condenser.model_copy(
+                    update={'llm': condenser_llm.model_copy(update=condenser_updates)}
+                )
+                overrides['condenser'] = updated_condenser
+
+        return agent.model_copy(update=overrides)
+
+    def _construct_initial_message_with_plugin_params(
+        self,
+        initial_message: SendMessageRequest | None,
+        plugins: list[PluginSpec] | None,
+    ) -> SendMessageRequest | None:
+        """Incorporate plugin parameters into the initial message if specified.
+
+        Plugin parameters are formatted and appended to the initial message so the
+        agent has context about the user-provided configuration values.
+
+        Args:
+            initial_message: The original initial message, if any
+            plugins: List of plugin specifications with optional parameters
+
+        Returns:
+            The initial message with plugin parameters incorporated, or the
+            original message if no plugin parameters are specified
+        """
+        from openhands.agent_server.models import TextContent
+
+        if not plugins:
+            return initial_message
+
+        # Collect formatted parameters from plugins that have them
+        plugins_with_params = [p for p in plugins if p.parameters]
+        if not plugins_with_params:
+            return initial_message
+
+        # Format parameters, grouped by plugin if multiple
+        if len(plugins_with_params) == 1:
+            params_text = plugins_with_params[0].format_params_as_text()
+            plugin_params_message = (
+                f'\n\nPlugin Configuration Parameters:\n{params_text}'
+            )
+        else:
+            # Group by plugin name for clarity
+            formatted_plugins = []
+            for plugin in plugins_with_params:
+                params_text = plugin.format_params_as_text(indent='  ')
+                if params_text:
+                    formatted_plugins.append(f'{plugin.display_name}:\n{params_text}')
+
+            plugin_params_message = (
+                '\n\nPlugin Configuration Parameters:\n' + '\n'.join(formatted_plugins)
+            )
+
+        if initial_message is None:
+            # Create a new message with just the plugin parameters
+            return SendMessageRequest(
+                content=[TextContent(text=plugin_params_message.strip())],
+                run=True,
+            )
+
+        # Append plugin parameters to existing message content
+        new_content = list(initial_message.content)
+        if new_content and isinstance(new_content[-1], TextContent):
+            # Append to the last text content
+            last_content = new_content[-1]
+            new_content[-1] = TextContent(
+                text=last_content.text + plugin_params_message,
+                cache_prompt=last_content.cache_prompt,
+            )
+        else:
+            # Add as new text content
+            new_content.append(TextContent(text=plugin_params_message.strip()))
+
+        return SendMessageRequest(
+            role=initial_message.role,
+            content=new_content,
+            run=initial_message.run,
+        )
+
+    async def _load_hooks_from_workspace(
+        self,
+        remote_workspace: AsyncRemoteWorkspace,
+        project_dir: str,
+    ) -> HookConfig | None:
+        """Load hooks from .openhands/hooks.json in the remote workspace.
+
+        This enables project-level hooks to be automatically loaded when starting
+        a conversation, similar to how OpenHands-CLI loads hooks from the workspace.
+
+        Uses the agent-server's /api/hooks endpoint, consistent with how skills
+        are loaded via /api/skills.
+
+        Args:
+            remote_workspace: AsyncRemoteWorkspace for accessing the agent server
+            project_dir: Project root directory path in the sandbox. This should
+                already be the resolved project directory (e.g.,
+                {working_dir}/{repo_name} when a repo is selected).
+
+        Returns:
+            HookConfig if hooks.json exists and is valid, None otherwise.
+            Returns None in the following cases:
+            - hooks.json file does not exist
+            - hooks.json contains invalid JSON
+            - hooks.json contains an empty hooks configuration
+            - Agent server is unreachable or returns an error
+
+        Note:
+            This method implements graceful degradation - if hooks cannot be loaded
+            for any reason, it returns None rather than raising an exception. This
+            ensures that conversation startup is not blocked by hook loading failures.
+            Errors are logged as warnings for debugging purposes.
+        """
+        return await load_hooks_from_agent_server(
+            agent_server_url=remote_workspace.host,
+            session_api_key=remote_workspace._headers.get('X-Session-API-Key'),
+            project_dir=project_dir,
+            httpx_client=self.httpx_client,
+        )
+
+    @staticmethod
+    async def _resolve_head_commit(
+        remote_workspace: AsyncRemoteWorkspace, project_dir: str
+    ) -> str:
+        """Best-effort post-clone HEAD sha for the Laminar trace; '' on failure.
+
+        ``--verify --quiet`` guarantees stdout is a validated object id (never
+        the literal ``HEAD`` an unborn repo would echo) and fails silently
+        rather than logging a ``fatal:`` line. The short timeout keeps this
+        trace-only lookup from delaying conversation startup if the workspace is
+        unresponsive — the metadata is simply dropped instead.
+        """
+        try:
+            result = await remote_workspace.execute_command(
+                'git rev-parse --verify --quiet HEAD', project_dir, timeout=10.0
+            )
+        except Exception as e:
+            _logger.debug('HEAD commit lookup for trace metadata failed: %s', e)
+            return ''
+        return result.stdout.strip() if not result.exit_code else ''
+
+    async def _build_observability_metadata(
+        self,
+        remote_workspace: AsyncRemoteWorkspace | None,
+        project_dir: str,
+        selected_repository: str | None,
+        selected_branch: str | None,
+        git_provider: ProviderType | None,
+    ) -> dict[str, str]:
+        """Repo identity for the Laminar trace so trajectories are searchable
+        by repo / branch / commit (the trace UI has no DB to join against).
+
+        Shared by the OpenHands and ACP request builders. The commit is the
+        post-clone HEAD, resolved best-effort from the (already-cloned)
+        workspace; omitted entirely for a repo-less conversation.
+        """
+        commit = ''
+        if selected_repository and remote_workspace is not None:
+            commit = await self._resolve_head_commit(remote_workspace, project_dir)
+        return {
+            key: value
+            for key, value in (
+                ('repo', selected_repository),
+                ('branch', selected_branch),
+                ('git_provider', git_provider.value if git_provider else None),
+                ('commit', commit),
+            )
+            if value
+        }
+
+    async def _build_start_conversation_request_for_user(
+        self,
+        user: UserInfo,
+        sandbox: SandboxInfo,
+        conversation_id: UUID,
+        initial_message: SendMessageRequest | None,
+        system_message_suffix: str | None,
+        git_provider: ProviderType | None,
+        working_dir: str,
+        agent_type: AgentType = AgentType.DEFAULT,
+        llm_model: str | None = None,
+        trigger: ConversationTrigger | None = None,
+        remote_workspace: AsyncRemoteWorkspace | None = None,
+        selected_repository: str | None = None,
+        selected_branch: str | None = None,
+        plugins: list[PluginSpec] | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_access_token: str | None = None,
+        git_credential_access_tokens: Mapping[str, str] | None = None,
+        system_prompt: str | None = None,
+        disabled_skills: list[str] | None = None,
+        request_observability_metadata: Mapping[str, Any] | None = None,
+        request_observability_tags: Sequence[str] | None = None,
+        request_observability_span_name: str | None = None,
+        browser_available: bool = True,
+        additional_repositories: Sequence[AdditionalRepository] = (),
+        sandbox_sdk_version: str | None = None,
+    ) -> StartConversationRequest:
+        """Build a scoped request for runtime finalization."""
+        llm_settings = (
+            None
+            if isinstance(user.agent_settings, ACPAgentSettings)
+            else user.agent_settings.llm
+        )
+        _logger.debug(
+            'managed_llm_key_refresh:build_request_context',
+            extra={
+                'user_id': user.id,
+                'conversation_id': str(conversation_id),
+                'agent_settings_type': type(user.agent_settings).__name__,
+                'model': getattr(llm_settings, 'model', None),
+                'base_url': str(getattr(llm_settings, 'base_url', None) or ''),
+                'has_api_key': bool(getattr(llm_settings, 'api_key', None)),
+            },
+        )
+
+        # Compose instance + org + user marketplaces once for both arms below.
+        # Enabled by default; inert (None) only when ENABLE_MARKETPLACE_PLUGIN_LOADING
+        # is explicitly disabled or no marketplaces are configured.
+        registered_marketplaces = await self._resolve_registered_marketplaces(user)
+
+        # Route ACP agent settings to the ACP-specific builder
+        if isinstance(user.agent_settings, ACPAgentSettings):
+            _logger.debug(
+                'managed_llm_key_refresh:skip_acp_agent_settings',
+                extra={
+                    'user_id': user.id,
+                    'conversation_id': str(conversation_id),
+                    'model': getattr(llm_settings, 'model', None),
+                    'base_url': str(getattr(llm_settings, 'base_url', None) or ''),
+                    'has_api_key': bool(getattr(llm_settings, 'api_key', None)),
+                },
+            )
+            if system_prompt is not None:
+                # ACP agents (external CLIs) own their system prompt; there is
+                # nothing to replace, so the request-level prompt is dropped.
+                _logger.warning(
+                    'app_conversation_start:system_prompt_ignored_for_acp_agent',
+                    extra={
+                        'user_id': user.id,
+                        'conversation_id': str(conversation_id),
+                    },
+                )
+            if client_tools:
+                raise ValueError(
+                    'client_tools are not supported for ACP agent launches'
+                )
+            acp_request = await self._build_acp_start_conversation_request(
+                user=user,
+                sandbox=sandbox,
+                conversation_id=conversation_id,
+                initial_message=initial_message,
+                system_message_suffix=system_message_suffix,
+                trigger=trigger,
+                working_dir=working_dir,
+                git_provider=git_provider,
+                selected_repository=selected_repository,
+                selected_branch=selected_branch,
+                remote_workspace=remote_workspace,
+                plugins=plugins,
+                registered_marketplaces=registered_marketplaces,
+                api_secrets=api_secrets,
+                azure_devops_access_token=azure_devops_access_token,
+                git_credential_access_tokens=git_credential_access_tokens,
+                request_observability_metadata=request_observability_metadata,
+                request_observability_tags=request_observability_tags,
+                request_observability_span_name=request_observability_span_name,
+                additional_repositories=additional_repositories,
+            )
+            if remote_workspace:
+                acp_request = await self._load_skills_onto_request(
+                    acp_request,
+                    sandbox,
+                    remote_workspace,
+                    selected_repository,
+                    get_project_dir(working_dir, selected_repository),
+                    effective_disabled_skills(user, disabled_skills),
+                    registered_marketplaces,
+                    additional_repositories,
+                )
+            return acp_request
+
+        project_dir = get_project_dir(working_dir, selected_repository)
+        workspace = LocalWorkspace(
+            working_dir=agent_working_dir(
+                working_dir, project_dir, additional_repositories
+            )
+        )
+
+        # --- secrets --------------------------------------------------------
+        # Start with secrets from git providers and database
+        secrets, system_message_suffix = await self._setup_conversation_secrets(
+            user,
+            trigger,
+            system_message_suffix,
+        )
+
+        # Merge API-provided secrets (they take precedence over existing ones)
+        if api_secrets:
+            from openhands.app_server.constants import (
+                validate_secret_name,
+                validate_secrets_dict,
+            )
+
+            # Validate overall dict size limits first
+            # Cast to Mapping for mypy compatibility (Mapping is covariant in value type)
+            validate_secrets_dict(cast('Mapping[str, object]', api_secrets))
+
+            for name, value in api_secrets.items():
+                validate_secret_name(name)
+                if name in secrets:
+                    _logger.warning(
+                        'API-provided secret %r overrides existing secret', name
+                    )
+                secrets[name] = StaticSecret(value=value)
+
+        secrets = _apply_profile_secret_scope(secrets, user)
+        # Setup already wrote this credential-helper token to the sandbox.
+        # Keep it registered for output masking even with a scoped profile.
+        self._register_azure_devops_access_token_secret(
+            secrets, azure_devops_access_token
+        )
+        self._register_git_credential_access_token_secrets(
+            secrets, git_credential_access_tokens
+        )
+
+        system_message_suffix = await self._append_git_context(
+            user,
+            git_provider,
+            selected_repository,
+            selected_branch,
+            azure_devops_access_token,
+            system_message_suffix,
+            working_dir,
+            additional_repositories,
+        )
+
+        # --- LLM + MCP -----------------------------------------------------
+        llm, mcp_config = await self._configure_llm_and_mcp(
+            user, llm_model, conversation_id, secrets=secrets
+        )
+
+        # --- system_message_suffix (planning-agent prefix) ------------------
+        effective_suffix = system_message_suffix
+        if agent_type == AgentType.PLAN:
+            if system_message_suffix:
+                effective_suffix = (
+                    f'{PLANNING_AGENT_INSTRUCTION}\n\n{system_message_suffix}'
+                )
+            else:
+                effective_suffix = PLANNING_AGENT_INSTRUCTION
+
+        # --- web host context -----------------------------------------------
+        # Add WEB_HOST to agent context if available
+        if self.web_url:
+            web_host_context = f'<HOST>\n{self.web_url}\n</HOST>'
+            if effective_suffix:
+                effective_suffix = f'{effective_suffix}\n\n{web_host_context}'
+            else:
+                effective_suffix = web_host_context
+
+        agent_definitions: list[Any] = []
+        selected_tools = user.agent_settings.tools
+        tools = selected_tools
+        if agent_type == AgentType.PLAN and selected_tools is None:
+            plan_path = (
+                self._compute_plan_path(project_dir, git_provider)
+                if project_dir
+                else None
+            )
+            tools = get_planning_tools(plan_path=plan_path)
+            tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
+        register_builtins_agents(enable_browser=browser_available)
+        if tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME):
+            agent_definitions = list(get_registered_agent_definitions())
+        if (
+            selected_tools is None
+            and agent_type != AgentType.PLAN
+            and self.enable_child_conversation_launcher
+            and self.web_url
+        ):
+            # Add the optional launcher only to the default toolset.
+            try:
+                from openhands.tools.child_conversation import (
+                    StartChildConversationTool,
+                )
+            except ImportError:
+                _logger.warning(
+                    'OH_ENABLE_CHILD_CONVERSATION_LAUNCHER is set but this '
+                    'openhands-sdk has no start_child_conversation tool; '
+                    'conversation %s starts without it',
+                    conversation_id,
+                )
+            else:
+                tools = resolve_tool_specs(None, enable_browser=browser_available)
+                tools.append(
+                    Tool(
+                        name=StartChildConversationTool.name,
+                        params={
+                            'launch_url': (
+                                f'{self.web_url}/api/v1/webhooks/'
+                                f'conversations/{conversation_id}/children'
+                            )
+                        },
+                    )
+                )
+
+        # --- build AgentSettings and create agent ---------------------------
+        resolved_context = user.agent_settings.agent_context or AgentContext()
+        # When enterprise persistent memory is enabled, stamp load_memory=True
+        # so the SDK's LocalConversation reads MEMORY.md from disk at session
+        # start. The memory file itself is written to the sandbox by
+        # maybe_inject_memory_context() in run_setup_scripts.
+        agent_context_update: dict[str, Any] = {
+            'system_message_suffix': _compose_system_message_suffix(
+                resolved_context.system_message_suffix,
+                effective_suffix,
+            ),
+            'secrets': None,
+            'registered_marketplaces': _to_sdk_marketplace_registrations(
+                registered_marketplaces
+            ),
+        }
+        if getattr(user, 'enable_memory_context', False):
+            agent_context_update['load_memory'] = True
+        configured_agent_settings = user.agent_settings.model_copy(
+            update={
+                'llm': llm,
+                'tools': launch_tool_specs(tools, browser_available=browser_available),
+                'mcp_config': mcp_config if mcp_config else {},
+                'agent_context': resolved_context.model_copy(
+                    update=agent_context_update
+                ),
+            }
+        )
+        if should_set_litellm_extra_body(llm.model):
+            configured_agent_settings = configured_agent_settings.model_copy(
+                update={
+                    'llm': llm.model_copy(
+                        update={
+                            'litellm_extra_body': {
+                                'metadata': get_llm_metadata(
+                                    model_name=llm.model,
+                                    llm_type=llm.usage_id or 'agent',
+                                    conversation_id=conversation_id,
+                                    user_id=user.id,
+                                    repo_name=selected_repository,
+                                    git_provider=git_provider.value
+                                    if git_provider
+                                    else None,
+                                    selected_branch=selected_branch,
+                                )
+                            }
+                        }
+                    )
+                }
+            )
+        # SDK settings cannot carry the sandbox prompt flag or planning presets.
+        agent = self._apply_server_agent_overrides(
+            configured_agent_settings.create_agent(),
+            agent_type,
+            conversation_id,
+            user.id,
+            repo_name=selected_repository,
+            git_provider=git_provider,
+            selected_branch=selected_branch,
+            system_prompt=system_prompt,
+        )
+
+        # --- hooks (require remote workspace; must precede request build) -----
+        hook_config: HookConfig | None = None
+        hooks_from_project_dir = agent_server_runs_hooks_from_project_dir(
+            sandbox_sdk_version
+        )
+        if remote_workspace and not loads_repository_hooks(
+            additional_repositories, project_dir_supported=hooks_from_project_dir
+        ):
+            _logger.info(
+                'Not loading repository hooks: with additional repositories this '
+                'sandbox (openhands-sdk %s) would run them from the parent folder, '
+                'not the primary repository',
+                sandbox_sdk_version,
+            )
+        elif remote_workspace:
+            try:
+                _logger.debug(
+                    f'Attempting to load hooks from workspace: '
+                    f'project_dir={project_dir}'
+                )
+                hook_config = await self._load_hooks_from_workspace(
+                    remote_workspace, project_dir
+                )
+                if hook_config:
+                    _logger.debug(
+                        f'Successfully loaded hooks: {sanitize_config(hook_config.model_dump())}'
+                    )
+                else:
+                    _logger.debug('No hooks found in workspace')
+            except Exception as e:
+                _logger.warning(f'Failed to load hooks: {e}', exc_info=True)
+
+        # --- plugins --------------------------------------------------------
+        final_initial_message = self._construct_initial_message_with_plugin_params(
+            initial_message, plugins
+        )
+        sdk_plugins: list[PluginSource] | None = None
+        if plugins:
+            sdk_plugins = [
+                PluginSource(
+                    source=p.source,
+                    ref=p.ref,
+                    repo_path=p.repo_path,
+                )
+                for p in plugins
+            ]
+
+        observability_metadata, observability_tags = self._build_observability_context(
+            conversation_id,
+            agent_kind='openhands',
+            selected_repository=selected_repository,
+            selected_branch=selected_branch,
+            git_provider=git_provider,
+        )
+
+        # --- populate ConversationSettings and build request ----------------
+        conv_settings = user.conversation_settings.model_copy(
+            update={
+                'agent_settings': configured_agent_settings,
+                'workspace': workspace,
+                'conversation_id': conversation_id,
+                'initial_message': final_initial_message,
+                'agent_definitions': agent_definitions,
+                'plugins': sdk_plugins,
+                'hook_config': hook_config,
+                **hook_project_dir_setting(
+                    hook_config,
+                    project_dir,
+                    project_dir_supported=hooks_from_project_dir,
+                ),
+            }
+        )
+
+        # Pass agent explicitly — it has server-only overrides (system
+        # prompts, LLM metadata, skills) applied after create_agent().
+        # ``user_id`` must be the stable app user id because the agent-server
+        # reuses it as both Laminar trace_user_id and PostHog distinct_id.
+        # Keep email as trace metadata only so Laminar remains searchable
+        # without splitting product analytics identity.
+        user_email = await self.user_context.get_user_email()
+        resolved_observability_metadata = await self._build_observability_metadata(
+            remote_workspace,
+            project_dir,
+            selected_repository,
+            selected_branch,
+            git_provider,
+        )
+        self._extend_observability_metadata(
+            observability_metadata, resolved_observability_metadata
+        )
+        if request_observability_metadata:
+            self._extend_observability_metadata(
+                observability_metadata, request_observability_metadata
+            )
+        if request_observability_tags:
+            self._extend_observability_tags(
+                observability_tags, request_observability_tags
+            )
+        self._extend_observability_metadata(
+            observability_metadata,
+            {'user_email': user_email},
+        )
+        create_kwargs: dict[str, Any] = {
+            'user_id': user.id,
+            'secrets': secrets,
+            'agent': agent,
+        }
+        if client_tools:
+            create_kwargs['client_tools'] = client_tools
+        title_llm_profile = _resolve_title_llm_profile(user, llm.model)
+        if title_llm_profile:
+            create_kwargs['title_llm_profile'] = title_llm_profile
+        if observability_metadata:
+            create_kwargs['observability_metadata'] = observability_metadata
+        if observability_tags:
+            create_kwargs['observability_tags'] = observability_tags
+        if request_observability_span_name:
+            create_kwargs['observability_span_name'] = request_observability_span_name
+        request = conv_settings.create_request(
+            StartConversationRequest, **create_kwargs
+        )
+
+        # --- skills (require remote workspace) ------------------------------
+        if remote_workspace:
+            request = await self._load_skills_onto_request(
+                request,
+                sandbox,
+                remote_workspace,
+                selected_repository,
+                project_dir,
+                effective_disabled_skills(user, disabled_skills),
+                registered_marketplaces,
+                additional_repositories,
+            )
+
+        return request
+
+    async def _resolve_registered_marketplaces(
+        self, user: UserInfo
+    ) -> list[MarketplaceRegistration] | None:
+        """Compose instance + org + user marketplaces for conversation start.
+
+        Kept as a method over the shared resolver so tests can patch it by
+        name.
+        """
+        return await resolve_registered_marketplaces(self.user_context, user)
+
+    async def _load_skills_onto_request(
+        self,
+        request: StartConversationRequest,
+        sandbox: SandboxInfo,
+        remote_workspace: AsyncRemoteWorkspace,
+        selected_repository: str | None,
+        project_dir: str,
+        disabled_skills: list[str] | None,
+        registered_marketplaces: list[MarketplaceRegistration] | None = None,
+        additional_repositories: Sequence[AdditionalRepository] = (),
+    ) -> StartConversationRequest:
+        """Load workspace skills into the launch source."""
+        try:
+            field = 'agent' if request.agent is not None else 'agent_settings'
+            source = request.agent or validate_agent_settings(request.agent_settings)
+            updated = await self._load_skills_and_update_agent(
+                sandbox,
+                source,
+                remote_workspace,
+                selected_repository,
+                project_dir,
+                disabled_skills=disabled_skills,
+                registered_marketplaces=registered_marketplaces,
+                additional_repositories=additional_repositories,
+            )
+            payload = (
+                updated
+                if field == 'agent'
+                else updated.model_dump(mode='json', context={'expose_secrets': True})
+            )
+            return request.model_copy(update={field: payload})
+        except Exception as exc:
+            _logger.warning('Failed to load skills: %s', type(exc).__name__)
+            return request
+
+    async def _build_acp_start_conversation_request(
+        self,
+        user: UserInfo,
+        sandbox: SandboxInfo,
+        conversation_id: UUID,
+        initial_message: SendMessageRequest | None,
+        working_dir: str,
+        system_message_suffix: str | None = None,
+        trigger: ConversationTrigger | None = None,
+        git_provider: ProviderType | None = None,
+        selected_repository: str | None = None,
+        selected_branch: str | None = None,
+        remote_workspace: AsyncRemoteWorkspace | None = None,
+        plugins: list[PluginSpec] | None = None,
+        registered_marketplaces: list[MarketplaceRegistration] | None = None,
+        api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_access_token: str | None = None,
+        git_credential_access_tokens: Mapping[str, str] | None = None,
+        request_observability_metadata: Mapping[str, Any] | None = None,
+        request_observability_tags: Sequence[str] | None = None,
+        request_observability_span_name: str | None = None,
+        additional_repositories: Sequence[AdditionalRepository] = (),
+    ) -> StartConversationRequest:
+        """Build a scoped ACP settings request for runtime finalization."""
+        project_dir = get_project_dir(working_dir, selected_repository)
+        workspace = LocalWorkspace(
+            working_dir=agent_working_dir(
+                working_dir, project_dir, additional_repositories
+            )
+        )
+
+        # --- secrets --------------------------------------------------------
+        # ACP secrets must be StaticSecrets — LookupSecrets with JWT headers
+        # (e.g. X-Access-Token) are redacted by the SDK serializer because
+        # "TOKEN" matches SECRET_KEY_PATTERNS, leaving headers: {} and
+        # causing provider auth to silently fail at subprocess launch.
+        # Use raw custom secrets, static git provider tokens, and static
+        # integration-scoped secrets for ACP conversations.
+        secrets: dict = await self._launch_custom_secrets(user)
+        secrets.update(await self._get_provider_token_secrets(user, lookup_url=None))
+
+        enrichment = await self.conversation_secret_enricher.enrich(
+            user_context=self.user_context,
+            user=user,
+            trigger=trigger,
+            system_message_suffix=system_message_suffix,
+            web_url=None,
+            jwt_service=self.jwt_service,
+            access_token_hard_timeout=self.access_token_hard_timeout,
+        )
+        for name, source in enrichment.secrets.items():
+            if name in secrets:
+                _logger.warning(
+                    'Integration-provided secret %r overrides existing secret', name
+                )
+            secrets[name] = source
+        system_message_suffix = enrichment.system_message_suffix
+
+        if api_secrets:
+            from openhands.app_server.constants import (
+                validate_secret_name,
+                validate_secrets_dict,
+            )
+
+            validate_secrets_dict(cast('Mapping[str, object]', api_secrets))
+            for name, value in api_secrets.items():
+                validate_secret_name(name)
+                if name in secrets:
+                    _logger.warning(
+                        'API-provided secret %r overrides existing secret', name
+                    )
+                secrets[name] = StaticSecret(value=value)
+
+        secrets = _apply_profile_secret_scope(secrets, user)
+        # Setup already wrote this credential-helper token to the sandbox.
+        # Keep it registered for output masking even with a scoped profile.
+        self._register_azure_devops_access_token_secret(
+            secrets, azure_devops_access_token
+        )
+        self._register_git_credential_access_token_secrets(
+            secrets, git_credential_access_tokens
+        )
+
+        system_message_suffix = await self._append_git_context(
+            user,
+            git_provider,
+            selected_repository,
+            selected_branch,
+            azure_devops_access_token,
+            system_message_suffix,
+            working_dir,
+            additional_repositories,
+        )
+
+        # --- build the ACP agent ------------------------------------------
+        acp_settings = user.agent_settings  # already verified to be ACPAgentSettings
+        assert isinstance(acp_settings, ACPAgentSettings)
+
+        # Isolate the CLI data dir onto the durable /workspace tree so the SDK
+        # self-resumes the provider session (session/load from base_state.json)
+        # across pause/resume — matching the regular-agent lifecycle (#1274).
+        # ACP settings carry no LLM: ACP CLIs handle their own LLM calls.
+        settings_update: dict[str, Any] = {'acp_isolate_data_dir': True}
+        # Forward the resolved profile's / user's custom MCP servers to the ACP
+        # subprocess (#15044 §7). Only custom servers — the system OpenHands MCP
+        # server (Tavily proxy) is runtime-internal and unreachable by an external
+        # ACP CLI, so it is intentionally not injected here.
+        acp_mcp_servers: dict[str, MCPServer] = {}
+        self._merge_custom_mcp_config(acp_mcp_servers, user, secrets)
+        if acp_mcp_servers:
+            settings_update['mcp_config'] = acp_mcp_servers
+        context_updates: dict[str, Any] = {}
+        if system_message_suffix:
+            context_updates['system_message_suffix'] = _compose_system_message_suffix(
+                acp_settings.agent_context.system_message_suffix
+                if acp_settings.agent_context
+                else None,
+                system_message_suffix,
+            )
+        if registered_marketplaces is not None:
+            context_updates['registered_marketplaces'] = (
+                _to_sdk_marketplace_registrations(registered_marketplaces)
+            )
+        if context_updates:
+            existing_context = acp_settings.agent_context or AgentContext()
+            settings_update['agent_context'] = existing_context.model_copy(
+                update=context_updates
+            )
+        acp_settings_for_agent = acp_settings.model_copy(update=settings_update)
+
+        sdk_plugins: list[PluginSource] | None = None
+        if plugins:
+            sdk_plugins = [
+                PluginSource(source=p.source, ref=p.ref, repo_path=p.repo_path)
+                for p in plugins
+            ]
+
+        observability_metadata, observability_tags = self._build_observability_context(
+            conversation_id,
+            agent_kind='acp',
+            selected_repository=selected_repository,
+            selected_branch=selected_branch,
+            git_provider=git_provider,
+        )
+
+        # Mirror the regular path: populate ConversationSettings and delegate
+        # to create_request() so that max_iterations, confirmation_mode, and
+        # security_analyzer flow through to ACP conversations too.
+        conv_settings = user.conversation_settings.model_copy(
+            update={
+                'workspace': workspace,
+                'conversation_id': conversation_id,
+                'initial_message': self._construct_initial_message_with_plugin_params(
+                    initial_message, plugins
+                ),
+                'plugins': sdk_plugins,
+            }
+        )
+        # ``user_id`` must be the stable app user id; see the LLM path above
+        # for why email stays in trace metadata instead of the identity field.
+        user_email = await self.user_context.get_user_email()
+        resolved_observability_metadata = await self._build_observability_metadata(
+            remote_workspace,
+            project_dir,
+            selected_repository,
+            selected_branch,
+            git_provider,
+        )
+        self._extend_observability_metadata(
+            observability_metadata, resolved_observability_metadata
+        )
+        if request_observability_metadata:
+            self._extend_observability_metadata(
+                observability_metadata, request_observability_metadata
+            )
+        if request_observability_tags:
+            self._extend_observability_tags(
+                observability_tags, request_observability_tags
+            )
+        self._extend_observability_metadata(
+            observability_metadata,
+            {'user_email': user_email},
+        )
+        create_kwargs: dict[str, Any] = {
+            'agent_settings': acp_settings_for_agent.model_dump(
+                mode='json', context={'expose_secrets': True}
+            ),
+            'user_id': user.id,
+            'secrets': secrets,
+        }
+        title_llm_profile = await self._resolve_acp_title_llm_profile(user)
+        if title_llm_profile:
+            create_kwargs['title_llm_profile'] = title_llm_profile
+        if observability_metadata:
+            create_kwargs['observability_metadata'] = observability_metadata
+        if observability_tags:
+            create_kwargs['observability_tags'] = observability_tags
+        if request_observability_span_name:
+            create_kwargs['observability_span_name'] = request_observability_span_name
+        return conv_settings.create_request(StartConversationRequest, **create_kwargs)
+
+    async def _resolve_acp_title_llm_profile(self, user: UserInfo) -> str | None:
+        """The title profile for an ACP launch, only if it carries a usable key.
+
+        ACP settings have no LLM, so profile seeding has no settings key to fall
+        back on. A keyless profile (e.g. Anthropic, when the user authenticates
+        Claude Code with an OAuth token) would reach the sandbox without
+        credentials and make every title call fail with a missing-key error.
+        """
+        name = _resolve_title_llm_profile(user)
+        if name is None:
+            return None
+        # Imported lazily: settings_router transitively imports this service, so
+        # a module-level import would be circular.
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        resolved = resolve_profile_llm(
+            user.llm_profiles.require(name),
+            managed_proxy_url=LITE_LLM_API_URL,
+            connections=await self.user_context.get_provider_connections(),
+        )
+        return name if has_real_api_key(resolved.api_key) else None
+
+    async def _process_pending_messages(
+        self,
+        task_id: UUID,
+        conversation_id: UUID,
+        agent_server_url: str,
+        session_api_key: str,
+    ) -> None:
+        """Process pending messages queued before conversation was ready.
+
+        Messages are delivered concurrently to the agent server. After processing,
+        all messages are deleted from the database regardless of success or failure.
+
+        Args:
+            task_id: The start task ID (may have been used as conversation_id initially)
+            conversation_id: The real conversation ID
+            agent_server_url: URL of the agent server
+            session_api_key: API key for authenticating with agent server
+        """
+        # Convert UUIDs to strings for the pending message service
+        # The frontend uses task-{uuid.hex} format (no hyphens), matching OpenHandsUUID serialization
+        task_id_str = f'task-{task_id.hex}'
+        # conversation_id uses standard format (with hyphens) for agent server API compatibility
+        conversation_id_str = str(conversation_id)
+
+        _logger.info(f'task_id={task_id_str} conversation_id={conversation_id_str}')
+
+        # First, update any messages that were queued with the task_id
+        updated_count = await self.pending_message_service.update_conversation_id(
+            old_conversation_id=task_id_str,
+            new_conversation_id=conversation_id_str,
+        )
+        _logger.info(f'updated_count={updated_count} ')
+        if updated_count > 0:
+            _logger.info(
+                f'Updated {updated_count} pending messages from task_id={task_id_str} '
+                f'to conversation_id={conversation_id_str}'
+            )
+
+        # Get all pending messages for this conversation
+        pending_messages = await self.pending_message_service.get_pending_messages(
+            conversation_id_str
+        )
+
+        if not pending_messages:
+            return
+
+        _logger.info(
+            f'Processing {len(pending_messages)} pending messages for '
+            f'conversation {conversation_id_str}'
+        )
+
+        # Process messages sequentially to preserve order
+        for msg in pending_messages:
+            try:
+                # Serialize content objects to JSON-compatible dicts
+                content_json = [item.model_dump() for item in msg.content]
+                # Use the events endpoint which handles message sending
+                response = await self.httpx_client.post(
+                    f'{agent_server_url}/api/conversations/{conversation_id_str}/events',
+                    json={
+                        'role': msg.role,
+                        'content': content_json,
+                        'run': True,
+                    },
+                    headers={'X-Session-API-Key': session_api_key},
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                _logger.debug(f'Delivered pending message {msg.id}')
+            except Exception as e:
+                _logger.warning(f'Failed to deliver pending message {msg.id}: {e}')
+
+        # Delete all pending messages after processing (regardless of success/failure)
+        deleted_count = (
+            await self.pending_message_service.delete_messages_for_conversation(
+                conversation_id_str
+            )
+        )
+        _logger.info(
+            f'Finished processing pending messages for conversation {conversation_id_str}. '
+            f'Deleted {deleted_count} messages.'
+        )
+
+    async def update_agent_server_conversation_title(
+        self,
+        conversation_id: str,
+        new_title: str,
+        app_conversation_info: AppConversationInfo,
+    ) -> None:
+        """Update the conversation title in the agent-server.
+
+        Args:
+            conversation_id: The conversation ID as a string
+            new_title: The new title to set
+            app_conversation_info: The app conversation info containing sandbox_id
+        """
+        # Get the sandbox info to find the agent-server URL
+        sandbox = await self.sandbox_service.get_sandbox(
+            app_conversation_info.sandbox_id
+        )
+        assert sandbox is not None, (
+            f'Sandbox {app_conversation_info.sandbox_id} not found for conversation {conversation_id}'
+        )
+        assert sandbox.exposed_urls is not None, (
+            f'Sandbox {app_conversation_info.sandbox_id} has no exposed URLs for conversation {conversation_id}'
+        )
+
+        # Use the existing method to get the agent-server URL
+        agent_server_url = self._get_agent_server_url(sandbox)
+
+        # Prepare the request
+        url = f'{agent_server_url.rstrip("/")}/api/conversations/{conversation_id}'
+        headers = {}
+        if sandbox.session_api_key:
+            headers['X-Session-API-Key'] = sandbox.session_api_key
+
+        payload = {'title': new_title}
+
+        # Make the PATCH request to the agent-server
+        response = await self.httpx_client.patch(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+
+        _logger.info(
+            f'Successfully updated agent-server conversation {conversation_id} title to "{new_title}"'
+        )
+
+    async def _resolve_git_provider(self, repository: str) -> ProviderType | None:
+        """Return the provider of a repository that was started without one.
+
+        The clone already resolves the provider from the user's tokens, but the
+        start request may not carry it (e.g. API clients). Best effort: returns
+        None when the provider cannot be found in time, so the start never fails.
+        """
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+            repo = await asyncio.wait_for(
+                provider_handler.verify_repo_provider(repository, is_optional=True),
+                timeout=_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS,
+            )
+            return repo.git_provider
+        except Exception:
+            _logger.warning(
+                f'Could not resolve the git provider of {repository}', exc_info=True
+            )
+            return None
+
+    def _validate_repository_update(
+        self,
+        request: AppConversationUpdateRequest,
+        existing_branch: str | None = None,
+    ) -> None:
+        """Validate repository-related fields in the update request.
+
+        Args:
+            request: The update request containing fields to validate
+            existing_branch: The conversation's current branch (if any)
+
+        Raises:
+            ValueError: If validation fails
+        """
+        # Check if repository is being set
+        if 'selected_repository' in request.model_fields_set:
+            repo = request.selected_repository
+            if repo is not None:
+                ensure_valid_repository_name(repo)
+
+                # If setting a repository, branch should also be provided
+                # (either in this request or already exists in conversation)
+                if (
+                    'selected_branch' not in request.model_fields_set
+                    and existing_branch is None
+                ):
+                    _logger.warning(
+                        f'Repository {repo} set without branch in the same request '
+                        'and no existing branch in conversation'
+                    )
+            else:
+                # Repository is being removed (set to null)
+                # Enforce consistency: branch and provider must also be cleared
+                if 'selected_branch' in request.model_fields_set:
+                    if request.selected_branch is not None:
+                        raise ValueError(
+                            'When removing repository, branch must also be cleared'
+                        )
+                if 'git_provider' in request.model_fields_set:
+                    if request.git_provider is not None:
+                        raise ValueError(
+                            'When removing repository, git_provider must also be cleared'
+                        )
+
+        # Validate branch if provided
+        if 'selected_branch' in request.model_fields_set:
+            branch = request.selected_branch
+            if branch is not None:
+                ensure_valid_git_branch_name(branch)
+
+    async def update_app_conversation(
+        self, conversation_id: UUID, request: AppConversationUpdateRequest
+    ) -> AppConversation | None:
+        """Update an app conversation and return it.
+
+        Return None if the conversation did not exist.
+
+        Only fields that are explicitly set in the request will be updated.
+        This allows partial updates where only specific fields are modified.
+        Fields can be set to None to clear them (e.g., removing a repository).
+
+        Raises:
+            ValueError: If repository/branch validation fails
+        """
+        info = await self.app_conversation_info_service.get_app_conversation_info(
+            conversation_id
+        )
+        if info is None:
+            return None
+
+        # Validate repository-related fields before updating
+        # Pass existing branch to avoid false warnings when only updating repository
+        self._validate_repository_update(request, existing_branch=info.selected_branch)
+
+        # Only update fields that were explicitly provided in the request
+        # This uses Pydantic's model_fields_set to detect which fields were set,
+        # allowing us to distinguish between "not provided" and "explicitly set to None"
+        for field_name in request.model_fields_set:
+            if field_name == 'tags':
+                continue
+            value = getattr(request, field_name)
+            setattr(info, field_name, value)
+
+        # Tags are applied as a merge patch: a None value deletes the key and keys
+        # not mentioned in the request are left untouched.
+        if request.tags is not None:
+            merged_tags = dict(info.tags)
+            for key, tag_value in request.tags.items():
+                if tag_value is None:
+                    merged_tags.pop(key, None)
+                else:
+                    merged_tags[key] = tag_value
+            info.tags = merged_tags
+
+        if 'title' in request.model_fields_set:
+            info.title_generation = None
+        info = await self.app_conversation_info_service.save_app_conversation_info(info)
+        conversations = await self._build_app_conversations([info])
+        return conversations[0]
+
+    async def delete_app_conversation(
+        self, conversation_id: UUID, skip_agent_server_delete: bool = False
+    ) -> bool:
+        """Delete a V1 conversation and all its associated data.
+
+        This method will also cascade delete all sub-conversations of the parent.
+
+        Args:
+            conversation_id: The UUID of the conversation to delete.
+            skip_agent_server_delete: If True, skip the agent server DELETE call.
+                This should be set when the sandbox is shared with other
+                conversations (e.g. created via /new) to avoid destabilizing
+                the shared runtime.
+        """
+        # Check if we have the required SQL implementation for transactional deletion
+        if not isinstance(
+            self.app_conversation_info_service, SQLAppConversationInfoService
+        ):
+            _logger.error(
+                f'Cannot delete V1 conversation {conversation_id}: SQL implementation required for transactional deletion',
+                extra={'conversation_id': str(conversation_id)},
+            )
+            return False
+
+        try:
+            # First, fetch the conversation to get the full object needed for agent server deletion
+            app_conversation = await self.get_app_conversation(conversation_id)
+            if not app_conversation:
+                _logger.warning(
+                    f'V1 conversation {conversation_id} not found for deletion',
+                    extra={'conversation_id': str(conversation_id)},
+                )
+                return False
+
+            # Delete all sub-conversations first (to maintain referential integrity)
+            await self._delete_sub_conversations(conversation_id)
+
+            # Now delete the parent conversation
+            # Delete from agent server if sandbox is running (skip if sandbox is shared)
+            if not skip_agent_server_delete:
+                await self._delete_from_agent_server(app_conversation)
+
+            # Delete from database using the conversation info from app_conversation
+            # AppConversation extends AppConversationInfo, so we can use it directly
+            return await self._delete_from_database(app_conversation)
+
+        except Exception:
+            _logger.exception(
+                f'Error deleting V1 conversation {conversation_id}',
+                extra={'conversation_id': str(conversation_id)},
+                stack_info=True,
+            )
+            return False
+
+    async def _delete_sub_conversations(self, parent_conversation_id: UUID) -> None:
+        """Delete all sub-conversations of a parent conversation.
+
+        This method handles errors gracefully, continuing to delete remaining
+        sub-conversations even if one fails.
+
+        Args:
+            parent_conversation_id: The UUID of the parent conversation.
+        """
+        sub_conversation_ids = (
+            await self.app_conversation_info_service.get_sub_conversation_ids(
+                parent_conversation_id
+            )
+        )
+
+        for sub_id in sub_conversation_ids:
+            try:
+                sub_conversation = await self.get_app_conversation(sub_id)
+                if sub_conversation:
+                    # Delete from agent server if sandbox is running
+                    await self._delete_from_agent_server(sub_conversation)
+                    # Delete from database
+                    await self._delete_from_database(sub_conversation)
+                    _logger.info(
+                        f'Successfully deleted sub-conversation {sub_id}',
+                        extra={'conversation_id': str(sub_id)},
+                    )
+            except Exception as e:
+                # Log error but continue deleting remaining sub-conversations
+                _logger.warning(
+                    f'Error deleting sub-conversation {sub_id}: {e}',
+                    extra={'conversation_id': str(sub_id)},
+                    exc_info=True,
+                )
+
+    async def _delete_from_agent_server(
+        self, app_conversation: AppConversation
+    ) -> None:
+        """Delete conversation from agent server if sandbox is running."""
+        conversation_id = app_conversation.id
+        if not (
+            app_conversation.sandbox_status == SandboxStatus.RUNNING
+            and app_conversation.session_api_key
+        ):
+            return
+
+        try:
+            # Get sandbox info to find agent server URL
+            sandbox = await self.sandbox_service.get_sandbox(
+                app_conversation.sandbox_id
+            )
+            if sandbox and sandbox.exposed_urls:
+                agent_server_url = self._get_agent_server_url(sandbox)
+
+                # Call agent server delete API
+                response = await self.httpx_client.delete(
+                    f'{agent_server_url}/api/conversations/{conversation_id}',
+                    headers={'X-Session-API-Key': app_conversation.session_api_key},
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+        except Exception as e:
+            _logger.warning(
+                f'Failed to delete conversation from agent server: {e}',
+                extra={'conversation_id': str(conversation_id)},
+            )
+            # Continue with database cleanup even if agent server call fails
+
+    async def _delete_from_database(
+        self, app_conversation_info: AppConversationInfo
+    ) -> bool:
+        """Delete conversation from database.
+
+        Args:
+            app_conversation_info: The app conversation info to delete (already fetched).
+        """
+        # The session is already managed by the dependency injection system
+        # No need for explicit transaction management here
+        deleted_info = (
+            await self.app_conversation_info_service.delete_app_conversation_info(
+                app_conversation_info.id
+            )
+        )
+        deleted_tasks = await self.app_conversation_start_task_service.delete_app_conversation_start_tasks(
+            app_conversation_info.id
+        )
+
+        return deleted_info or deleted_tasks
+
+    async def _get_conversation_export_info(
+        self, conversation_id: UUID
+    ) -> AppConversationInfo:
+        conversation_info = (
+            await self.app_conversation_info_service.get_app_conversation_info(
+                conversation_id
+            )
+        )
+        if not conversation_info:
+            raise ValueError(f'Conversation not found: {conversation_id}')
+        return conversation_info
+
+    async def _validate_conversation_export_size(self, conversation_id: UUID):
+        if self.export_max_events <= 0:
+            return
+
+        event_count = await self.event_service.count_events(conversation_id)
+        if event_count > self.export_max_events:
+            raise ConversationExportTooLarge(
+                f'Conversation export contains {event_count} events, '
+                f'exceeding the limit of {self.export_max_events}'
+            )
+
+    def _conversation_export_lock_key(self, conversation_id: UUID) -> str:
+        return f'{_EXPORT_LOCK_KEY_PREFIX}:{conversation_id.hex}'
+
+    def _conversation_export_lock_refresh_interval(self) -> int:
+        ttl_seconds = max(1, self.export_lock_ttl_seconds)
+        configured_interval = max(1, self.export_lock_refresh_interval_seconds)
+        return min(configured_interval, max(1, ttl_seconds // 2))
+
+    def _conversation_export_lock_required(self) -> bool:
+        if self.export_lock_required is not None:
+            return self.export_lock_required
+        return (self.app_mode or '').lower() == 'saas'
+
+    async def _stream_conversation_zip(
+        self, conversation_id: UUID, conversation_info: AppConversationInfo
+    ) -> AsyncGenerator[bytes, None]:
+        zip_buffer = _StreamingZipBuffer()
+        with zipfile.ZipFile(
+            cast(BinaryIO, zip_buffer), 'w', zipfile.ZIP_DEFLATED
+        ) as zipf:
+            zipf.writestr('meta.json', conversation_info.model_dump_json(indent=2))
+            for chunk in zip_buffer.drain():
+                yield chunk
+
+            i = 0
+            async for event in self.event_service.iter_events_for_export(
+                conversation_id
+            ):
+                event_filename = f'event_{i:06d}_{event.id}.json'
+                event_data = event.model_dump(mode='json')
+                event_json = json.dumps(event_data, indent=2)
+                zipf.writestr(event_filename, event_json)
+                for chunk in zip_buffer.drain():
+                    yield chunk
+                i += 1
+
+        for chunk in zip_buffer.drain():
+            yield chunk
+
+    async def open_conversation_export(
+        self, conversation_id: UUID
+    ) -> AsyncGenerator[bytes, None]:
+        """Prepare a locked streaming conversation trajectory export."""
+        conversation_info = await self._get_conversation_export_info(conversation_id)
+        lock_key = self._conversation_export_lock_key(conversation_id)
+        lock_unavailable = False
+        try:
+            export_lock = await try_acquire_redis_lock(
+                lock_key, max(1, self.export_lock_ttl_seconds)
+            )
+        except RedisLockUnavailable as e:
+            if self._conversation_export_lock_required():
+                raise ConversationExportLockUnavailable(
+                    f'Could not acquire export lock for conversation {conversation_id}'
+                ) from e
+            _logger.warning(
+                'conversation_export:lock_unavailable_proceeding_without_lock',
+                extra={'conversation_id': str(conversation_id)},
+            )
+            export_lock = None
+            lock_unavailable = True
+
+        if export_lock is None and not lock_unavailable:
+            raise ConversationExportAlreadyRunning(
+                f'Conversation export already running: {conversation_id}'
+            )
+
+        try:
+            await self._validate_conversation_export_size(conversation_id)
+        except Exception:
+            if export_lock:
+                try:
+                    await export_lock.release()
+                except LockError:
+                    pass
+            raise
+
+        refresh_interval = self._conversation_export_lock_refresh_interval()
+
+        async def stream():
+            # Refresh the lock in a background task so the streaming loop stays
+            # simple and lock maintenance doesn't block chunk generation.
+            refresh_task = (
+                asyncio.create_task(
+                    refresh_lock_periodically(export_lock, refresh_interval)
+                )
+                if export_lock
+                else None
+            )
+            try:
+                async for chunk in self._stream_conversation_zip(
+                    conversation_id, conversation_info
+                ):
+                    yield chunk
+            finally:
+                if refresh_task is not None:
+                    refresh_task.cancel()
+                if export_lock:
+                    try:
+                        await export_lock.release()
+                    except LockError:
+                        _logger.warning(
+                            'conversation_export:lock_release_failed',
+                            extra={'conversation_id': str(conversation_id)},
+                        )
+
+        return stream()
+
+    async def export_conversation(self, conversation_id: UUID) -> bytes:
+        """Download a conversation trajectory as a zip file.
+
+        The whole zip is buffered in memory before it is returned, so this is
+        only suitable for small conversations. Large exports should go through
+        ``open_conversation_export``, which streams the zip instead.
+
+        Args:
+            conversation_id: The UUID of the conversation to download.
+
+        Returns the zip file as bytes.
+        """
+        conversation_info = await self._get_conversation_export_info(conversation_id)
+        await self._validate_conversation_export_size(conversation_id)
+
+        chunks = []
+        async for chunk in self._stream_conversation_zip(
+            conversation_id, conversation_info
+        ):
+            chunks.append(chunk)
+
+        return b''.join(chunks)
+
+
+def get_sandbox_web_url(
+    config: AppServerConfig, sandbox_service: SandboxService
+) -> str | None:
+    """Return the URL the sandbox uses to reach OpenHands."""
+    web_url = config.sandbox_web_url or config.web_url
+    # If no web url has been set and we are using docker, we can use host.docker.internal
+    if web_url is None and isinstance(sandbox_service, DockerSandboxService):
+        web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+    return web_url
+
+
+SECRET_LOOKUP_PATH = '/api/v1/webhooks/secrets'
+
+
+def secret_lookup_url(web_url: str | None, *, remote_sandboxes: bool) -> str | None:
+    """The webhook secrets URL for sandboxes that reach OpenHands at ``web_url``.
+
+    ``None`` when they cannot call back to it: no URL, or a localhost URL that a
+    remote sandbox cannot reach.
+    """
+    if not web_url:
+        return None
+    if remote_sandboxes and urlparse(web_url).hostname in ('localhost', '127.0.0.1'):
+        return None
+    return web_url + SECRET_LOOKUP_PATH
+
+
+class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
+    sandbox_startup_timeout: int = Field(
+        default=120, description='The max timeout time for sandbox startup'
+    )
+    sandbox_startup_poll_frequency: int = Field(
+        default=2, description='The frequency to poll for sandbox readiness'
+    )
+    max_num_conversations_per_sandbox: int = Field(
+        default=20,
+        description='The maximum number of conversations allowed per sandbox',
+    )
+    init_git_in_empty_workspace: bool = Field(
+        default=True,
+        description='Whether to initialize a git repo when the workspace is empty',
+    )
+    access_token_hard_timeout: int | None = Field(
+        default=14 * 86400,
+        description=(
+            'A security measure - the time after which git tokens may no longer '
+            'be retrieved by a sandboxed conversation.'
+        ),
+    )
+    export_max_events: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            'The maximum number of events allowed in a conversation export '
+            '(0 disables the limit)'
+        ),
+    )
+    export_lock_ttl_seconds: int = Field(
+        default=3600,
+        description='Redis lock TTL for a single conversation export',
+    )
+    export_lock_refresh_interval_seconds: int = Field(
+        default=30,
+        description='How often to refresh the Redis lock during a conversation export',
+    )
+    export_lock_required: bool | None = Field(
+        default=None,
+        description=(
+            'Whether Redis export locking is required. Defaults to required in '
+            'SAAS mode and best-effort elsewhere.'
+        ),
+    )
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = Field(
+        default=None,
+        description=(
+            'Deployment-wide default sandbox grouping strategy, used when a '
+            'user/org has not explicitly configured one. Falls back to '
+            'NO_GROUPING when unset.'
+        ),
+    )
+
+    async def inject(
+        self, state: InjectorState, request: Request | None = None
+    ) -> AsyncGenerator[AppConversationService, None]:
+        from openhands.app_server.config import (
+            get_app_conversation_info_service,
+            get_app_conversation_start_task_service,
+            get_event_service,
+            get_global_config,
+            get_httpx_client,
+            get_jwt_service,
+            get_pending_message_service,
+            get_sandbox_service,
+            get_sandbox_spec_service,
+            get_user_context,
+        )
+
+        async with (
+            get_user_context(state, request) as user_context,
+            get_sandbox_service(state, request) as sandbox_service,
+            get_sandbox_spec_service(state, request) as sandbox_spec_service,
+            get_app_conversation_info_service(
+                state, request
+            ) as app_conversation_info_service,
+            get_app_conversation_start_task_service(
+                state, request
+            ) as app_conversation_start_task_service,
+            get_event_callback_service(state, request) as event_callback_service,
+            get_event_service(state, request) as event_service,
+            get_jwt_service(state, request) as jwt_service,
+            get_httpx_client(state, request) as httpx_client,
+            get_pending_message_service(state, request) as pending_message_service,
+        ):
+            access_token_hard_timeout = None
+            if self.access_token_hard_timeout:
+                access_token_hard_timeout = timedelta(
+                    seconds=float(self.access_token_hard_timeout)
+                )
+            config = get_global_config()
+
+            # Every use of web_url in this service is a URL the sandbox calls.
+            web_url = get_sandbox_web_url(config, sandbox_service)
+
+            # Get app_mode for SaaS mode
+            app_mode = None
+            conversation_secret_enricher = ConversationSecretEnricher()
+            try:
+                from openhands.app_server.shared import server_config
+
+                app_mode = (
+                    server_config.app_mode.value if server_config.app_mode else None
+                )
+                enricher_cls = get_impl(
+                    ConversationSecretEnricher,
+                    server_config.conversation_secret_enricher_class,
+                )
+                conversation_secret_enricher = enricher_cls()
+            except (ImportError, AttributeError):
+                # If server_config is not available (e.g., in tests), continue without it
+                pass
+
+            yield LiveStatusAppConversationService(
+                init_git_in_empty_workspace=self.init_git_in_empty_workspace,
+                user_context=user_context,
+                sandbox_service=sandbox_service,
+                sandbox_spec_service=sandbox_spec_service,
+                app_conversation_info_service=app_conversation_info_service,
+                app_conversation_start_task_service=app_conversation_start_task_service,
+                event_callback_service=event_callback_service,
+                event_service=event_service,
+                jwt_service=jwt_service,
+                pending_message_service=pending_message_service,
+                sandbox_startup_timeout=self.sandbox_startup_timeout,
+                sandbox_startup_poll_frequency=self.sandbox_startup_poll_frequency,
+                max_num_conversations_per_sandbox=self.max_num_conversations_per_sandbox,
+                httpx_client=httpx_client,
+                web_url=web_url,
+                enable_child_conversation_launcher=(
+                    config.enable_child_conversation_launcher
+                ),
+                openhands_provider_base_url=config.openhands_provider_base_url,
+                access_token_hard_timeout=access_token_hard_timeout,
+                conversation_secret_enricher=conversation_secret_enricher,
+                app_mode=app_mode,
+                sandbox_grouping_strategy=self.sandbox_grouping_strategy,
+                export_max_events=self.export_max_events,
+                export_lock_ttl_seconds=self.export_lock_ttl_seconds,
+                export_lock_refresh_interval_seconds=(
+                    self.export_lock_refresh_interval_seconds
+                ),
+                export_lock_required=self.export_lock_required,
+            )

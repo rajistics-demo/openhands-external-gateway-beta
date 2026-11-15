@@ -1,0 +1,7 @@
+# Keep the image build context to exactly what Dockerfile.customer-gateway and
+# Dockerfile.sourceprep need: the base-image reference, the overlay, the manifest,
+# and the patches. Nothing else in this handoff tree is part of the build context.
+.build/
+.cache/
+__pycache__/
+*.pyc

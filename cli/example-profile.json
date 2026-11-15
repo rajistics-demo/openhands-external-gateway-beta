@@ -1,0 +1,12 @@
+{
+  "_comment": "SCHEMA EXAMPLE ONLY — placeholder origin, model names and alias set. Not usable as-is; copy and replace every value with the customer's real gateway details. Validated by server/customer_gateway/profile.py:parse_profile at `cli set-org` time.",
+  "base_url": "https://REPLACE-WITH-CUSTOMER-GATEWAY-ORIGIN",
+  "protocol": "openai_chat_completions",
+  "credential_header": "authorization",
+  "capabilities": ["stream", "tools"],
+  "models": {
+    "deepseek-chat": "deepseek/deepseek-chat",
+    "claude-sonnet": "anthropic/claude-sonnet-4-5-20250929",
+    "claude-opus": "anthropic/claude-opus-4-1-20250805"
+  }
+}

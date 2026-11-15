@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+#
+# Produces a patched Enterprise 1.92.0 source tree with the frozen customer-gateway
+# patch baked in, for the final image build (containers/app/Dockerfile from that
+# tree). No runtime ConfigMap/overlay mount is used anywhere in this package: the
+# patch is applied once, here, at image build time.
+#
+# Two hash guards bracket the patch:
+#   1. "base"    - every path the patch will touch/add must match (or be absent for
+#                  new files) the reviewed base commit BEFORE patching. This fails
+#                  fast if the wrong base source was fetched.
+#   2. "overlay" - every path must match the reviewed overlay hash AFTER patching.
+#                  This fails fast if the patch did not apply exactly as reviewed.
+#
+# Usage (see build.sh):
+#   docker buildx build -f build/Dockerfile.sourceprep \
+#     --target patched-source -o type=local,dest=.build/patched-src build/
+
+ARG ENTERPRISE_REPO=https://github.com/OpenHands/enterprise.git
+ARG ENTERPRISE_BASE_COMMIT=7647eab7b963a5ed0a564215c082dd66331b79a6
+
+FROM scratch AS pristine-source
+ARG ENTERPRISE_REPO
+ARG ENTERPRISE_BASE_COMMIT
+ADD ${ENTERPRISE_REPO}#${ENTERPRISE_BASE_COMMIT} /src
+
+FROM python:3.13-slim AS prep
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY --from=pristine-source /src /src
+COPY manifest/overlay-manifest.json /guard/overlay-manifest.json
+COPY verify_overlay.py /guard/verify_overlay.py
+COPY patches/enterprise-1.92.0-customer-gateway.patch /guard/main.patch
+COPY patches/migration-docstring-correction.patch /guard/doc.patch
+
+# Guard 1: confirm the fetched source really is the reviewed base, before patching.
+RUN python3 /guard/verify_overlay.py base /guard/overlay-manifest.json /src
+
+# Apply the frozen runtime patch, then the separate documentation-only correction.
+# `git apply` is used as a strict, format-aware patch applier; /src itself does not
+# need to be a git repository for this to work.
+RUN git -C /src apply --whitespace=nowarn /guard/main.patch \
+    && git -C /src apply --whitespace=nowarn /guard/doc.patch
+
+# Guard 2: confirm the patched tree matches the exact reviewed overlay hashes.
+RUN python3 /guard/verify_overlay.py overlay /guard/overlay-manifest.json /src
+
+FROM scratch AS patched-source
+COPY --from=prep /src /
